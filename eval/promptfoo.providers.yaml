@@ -1,0 +1,61 @@
+# Multi-model provider matrix for side-by-side comparison.
+#
+# Usage:
+#   npx promptfoo eval --config eval/promptfoo.yaml --providers eval/promptfoo.providers.yaml
+#
+# Prerequisites:
+#   Run three FastAPI server instances with different OPENAI_CHAT_MODEL env vars:
+#     Port 8000: OPENAI_CHAT_MODEL=gpt-4.1-mini uvicorn app.main:app
+#     Port 8001: OPENAI_CHAT_MODEL=gpt-4o      uvicorn app.main:app --port 8001
+#     Port 8002: OPENAI_CHAT_MODEL=gpt-4o-mini uvicorn app.main:app --port 8002
+#
+# Each instance shares the same database but uses a different generation model.
+
+providers:
+  - id: "toi-chat-gpt41mini"
+    label: "gpt-4.1-mini (baseline)"
+    config:
+      type: http
+      url: "{{env.TOI_BASE_URL | default('http://localhost:8000')}}/chat"
+      method: POST
+      headers:
+        Content-Type: "application/json"
+        Cookie: "toi_rag_session={{env.TOI_SESSION_COOKIE}}"
+      body:
+        question: "{{question}}"
+        issue_date: "{{issue_date}}"
+        session_filters: "{{session_filters}}"
+        history: "{{history}}"
+      transformResponse: "json.answer"
+
+  - id: "toi-chat-gpt4o"
+    label: "gpt-4o"
+    config:
+      type: http
+      url: "{{env.TOI_BASE_URL_GPT4O | default('http://localhost:8001')}}/chat"
+      method: POST
+      headers:
+        Content-Type: "application/json"
+        Cookie: "toi_rag_session={{env.TOI_SESSION_COOKIE}}"
+      body:
+        question: "{{question}}"
+        issue_date: "{{issue_date}}"
+        session_filters: "{{session_filters}}"
+        history: "{{history}}"
+      transformResponse: "json.answer"
+
+  - id: "toi-chat-gpt4omini"
+    label: "gpt-4o-mini"
+    config:
+      type: http
+      url: "{{env.TOI_BASE_URL_GPT4O_MINI | default('http://localhost:8002')}}/chat"
+      method: POST
+      headers:
+        Content-Type: "application/json"
+        Cookie: "toi_rag_session={{env.TOI_SESSION_COOKIE}}"
+      body:
+        question: "{{question}}"
+        issue_date: "{{issue_date}}"
+        session_filters: "{{session_filters}}"
+        history: "{{history}}"
+      transformResponse: "json.answer"

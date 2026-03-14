@@ -1,0 +1,279 @@
+description: "TOI RAG chatbot evaluation — March 11, 2026 dataset"
+
+# ---------------------------------------------------------------------------
+# PROVIDERS
+# ---------------------------------------------------------------------------
+providers:
+  - id: "toi-chat-baseline"
+    label: "gpt-4.1-mini (baseline)"
+    config:
+      type: http
+      url: "{{env.TOI_BASE_URL | default('http://localhost:8000')}}/chat"
+      method: POST
+      headers:
+        Content-Type: "application/json"
+        Cookie: "toi_rag_session={{env.TOI_SESSION_COOKIE}}"
+      body:
+        question: "{{question}}"
+        issue_date: "{{issue_date}}"
+        session_filters: "{{session_filters}}"
+        history: "{{history}}"
+      transformResponse: "json.answer"
+
+# ---------------------------------------------------------------------------
+# DEFAULT TEST SETTINGS
+# ---------------------------------------------------------------------------
+defaultTest:
+  vars:
+    issue_date: "2026-03-11"
+    session_filters: null
+    history: null
+
+# ---------------------------------------------------------------------------
+# TEST CASES (20 questions)
+# ---------------------------------------------------------------------------
+tests:
+
+  # -------------------------------------------------------------------------
+  # CATEGORY 1: FACTUAL / SQL-ROUTED
+  # -------------------------------------------------------------------------
+
+  - description: "TC-01: Front-page headlines"
+    vars:
+      question: "What were the main headlines on March 11, 2026?"
+    assert:
+      - type: answer-relevance
+        threshold: 0.7
+      - type: llm-rubric
+        value: "Lists multiple article headlines and does not fabricate events not in the TOI dataset"
+      - type: not-contains
+        value: "I don't have"
+
+  - description: "TC-02: Sports section listing"
+    vars:
+      question: "List articles from the Sports section on March 11, 2026"
+    assert:
+      - type: answer-relevance
+        threshold: 0.7
+      - type: contains-any
+        value: ["Sports", "cricket", "football", "IPL", "match"]
+      - type: llm-rubric
+        value: "Contains at least 3 article headlines from the Sports section"
+
+  - description: "TC-03: Mumbai edition filter"
+    vars:
+      question: "Show me articles from the Mumbai edition published on March 11, 2026"
+    assert:
+      - type: answer-relevance
+        threshold: 0.65
+      - type: contains
+        value: "Mumbai"
+      - type: llm-rubric
+        value: "All mentioned articles are from the Mumbai edition only, not other editions"
+
+  - description: "TC-04: Section with most articles (ranked list)"
+    vars:
+      question: "Which sections had the most articles on March 11, 2026?"
+    assert:
+      - type: answer-relevance
+        threshold: 0.8
+      - type: regex
+        value: "\\d+"
+      - type: llm-rubric
+        value: "Response is a ranked list of sections that includes numeric article counts"
+
+  - description: "TC-05: Count query (format regression test)"
+    vars:
+      question: "How many articles were published on March 11, 2026?"
+    assert:
+      - type: regex
+        value: "There were \\d+ articles"
+      - type: llm-rubric
+        value: "Answer contains a specific numeric count, not a vague description"
+
+  # -------------------------------------------------------------------------
+  # CATEGORY 2: SPORTS / SEMANTIC-ROUTED
+  # -------------------------------------------------------------------------
+
+  - description: "TC-06: T20 cricket coverage"
+    vars:
+      question: "What did TOI cover about T20 cricket on March 11, 2026?"
+    assert:
+      - type: answer-relevance
+        threshold: 0.75
+      - type: context-faithfulness
+        threshold: 0.7
+      - type: llm-rubric
+        value: "Discusses T20/cricket content and cites specific article headlines"
+
+  - description: "TC-07: IPL cricket news (graceful-miss test)"
+    vars:
+      question: "What IPL cricket news was covered on March 11?"
+    assert:
+      - type: answer-relevance
+        threshold: 0.7
+      - type: llm-rubric
+        value: "If IPL news exists, gives specific details. If not found, clearly states it is not available in the dataset."
+
+  - description: "TC-08: World Cup victory (semantic expansion test)"
+    vars:
+      question: "How did TOI cover India's World Cup victory?"
+    assert:
+      - type: context-faithfulness
+        threshold: 0.65
+      - type: llm-rubric
+        value: "References specific headlines if coverage exists. If not present in this edition, clearly states that."
+
+  # -------------------------------------------------------------------------
+  # CATEGORY 3: NATIONAL / HYBRID-ROUTED
+  # -------------------------------------------------------------------------
+
+  - description: "TC-09: Top national political stories"
+    vars:
+      question: "What were the top national political stories on March 11, 2026?"
+    assert:
+      - type: answer-relevance
+        threshold: 0.7
+      - type: context-faithfulness
+        threshold: 0.65
+      - type: llm-rubric
+        value: "Mentions specific political stories with headlines and editions, not generic summaries"
+
+  - description: "TC-10: Nation section + politics (hybrid routing)"
+    vars:
+      question: "Show me articles from the Nation section about politics on March 11"
+    assert:
+      - type: answer-relevance
+        threshold: 0.7
+      - type: llm-rubric
+        value: "All cited articles are from the Nation section specifically"
+
+  # -------------------------------------------------------------------------
+  # CATEGORY 4: BUSINESS / SEMANTIC-ROUTED
+  # -------------------------------------------------------------------------
+
+  - description: "TC-11: Budget coverage"
+    vars:
+      question: "What budget-related news was published on March 11, 2026?"
+    assert:
+      - type: answer-relevance
+        threshold: 0.7
+      - type: context-faithfulness
+        threshold: 0.65
+      - type: llm-rubric
+        value: "Discusses specific budget articles with headlines. If none exist for this date, says so clearly."
+
+  - description: "TC-12: Business section listing"
+    vars:
+      question: "List articles from the Business section on March 11, 2026"
+    assert:
+      - type: answer-relevance
+        threshold: 0.7
+      - type: contains-any
+        value: ["Business", "economy", "market", "stock", "finance"]
+
+  # -------------------------------------------------------------------------
+  # CATEGORY 5: INTERNATIONAL / SEMANTIC-ROUTED
+  # -------------------------------------------------------------------------
+
+  - description: "TC-13: International conflicts"
+    vars:
+      question: "What international conflicts were covered in TOI on March 11?"
+    assert:
+      - type: answer-relevance
+        threshold: 0.7
+      - type: context-faithfulness
+        threshold: 0.65
+      - type: llm-rubric
+        value: "Names specific countries/regions involved and references article headlines"
+
+  - description: "TC-14: Iran + Mumbai edition (hybrid routing)"
+    vars:
+      question: "Find articles about Iran published in the Mumbai edition on March 11, 2026"
+    assert:
+      - type: answer-relevance
+        threshold: 0.7
+      - type: context-faithfulness
+        threshold: 0.65
+      - type: llm-rubric
+        value: "If Iran articles exist in the Mumbai edition, lists them. If none, says so clearly."
+
+  # -------------------------------------------------------------------------
+  # CATEGORY 6: MULTI-TURN
+  # -------------------------------------------------------------------------
+
+  - description: "TC-15: Follow-up question (history injection)"
+    vars:
+      question: "Which of those was the most prominent story?"
+      history:
+        - role: "user"
+          content: "What were the main headlines in the Sports section on March 11, 2026?"
+        - role: "assistant"
+          content: "The Sports section on March 11 covered cricket match results and IPL team news."
+    assert:
+      - type: answer-relevance
+        threshold: 0.6
+      - type: llm-rubric
+        value: "Correctly interprets the follow-up in context of the prior Sports conversation and identifies a specific story"
+
+  - description: "TC-16: Context-grounded follow-up"
+    vars:
+      question: "Tell me more about the political story you just mentioned"
+      history:
+        - role: "user"
+          content: "What national news was covered on March 11?"
+        - role: "assistant"
+          content: "The Nation section covered parliamentary sessions and state election news."
+    assert:
+      - type: answer-relevance
+        threshold: 0.6
+      - type: context-faithfulness
+        threshold: 0.6
+      - type: llm-rubric
+        value: "Grounds the follow-up in retrieved articles, not purely in the prior assistant turn"
+
+  # -------------------------------------------------------------------------
+  # CATEGORY 7: ROBUSTNESS (hallucination prevention)
+  # -------------------------------------------------------------------------
+
+  - description: "TC-17: Event not in dataset — hallucination test"
+    vars:
+      question: "What did TOI report about the 2024 Olympics on March 11, 2026?"
+    assert:
+      - type: llm-rubric
+        value: "Clearly states the information is not available or not supported by retrieved articles. Does NOT fabricate Olympics coverage."
+      - type: contains-any
+        value: ["not supported", "not found", "no articles", "not available", "not covered", "not in"]
+
+  - description: "TC-18: Future event prediction — out-of-scope"
+    vars:
+      question: "What will the Indian government announce tomorrow about tax policy?"
+    assert:
+      - type: llm-rubric
+        value: "Correctly declines to predict future events. Either says this is not in the dataset, or redirects to what is actually covered."
+      - type: not-contains
+        value: "will announce"
+
+  # -------------------------------------------------------------------------
+  # CATEGORY 8: EDGE CASES
+  # -------------------------------------------------------------------------
+
+  - description: "TC-19: Typo tolerance (TOKEN_CORRECTIONS in query_router)"
+    vars:
+      question: "What sporst news was covered on March 11, 2026?"
+    assert:
+      - type: answer-relevance
+        threshold: 0.65
+      - type: llm-rubric
+        value: "Despite the 'sporst' typo, correctly interprets and returns sports news articles"
+
+  - description: "TC-20: Top 5 Delhi edition articles"
+    vars:
+      question: "Show me the top 5 articles from the Delhi edition on March 11"
+    assert:
+      - type: answer-relevance
+        threshold: 0.7
+      - type: contains
+        value: "Delhi"
+      - type: llm-rubric
+        value: "Lists 5 or fewer articles attributed specifically to the Delhi edition"
