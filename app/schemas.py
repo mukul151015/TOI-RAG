@@ -41,6 +41,11 @@ class QueryRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=50)
 
 
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=5)
+    password: str = Field(min_length=6)
+
+
 class ChatRequest(BaseModel):
     question: str = Field(min_length=3)
     issue_date: str | None = None
@@ -67,3 +72,8 @@ class ChatResponse(BaseModel):
     answer: str
     mode: Literal["sql", "semantic", "hybrid"]
     citations: list[dict[str, Any]]
+
+
+class AuthStatusResponse(BaseModel):
+    authenticated: bool
+    email: str | None = None

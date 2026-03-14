@@ -349,6 +349,54 @@
         cursor: wait;
       }
 
+      .auth-shell {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: rgba(18, 25, 29, 0.58);
+        z-index: 1200;
+      }
+
+      .auth-shell.open {
+        display: flex;
+      }
+
+      .auth-card {
+        width: min(420px, 100%);
+        background: rgba(255, 252, 245, 0.98);
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        box-shadow: var(--shadow);
+        padding: 24px;
+      }
+
+      .auth-actions {
+        display: grid;
+        gap: 12px;
+        margin-top: 16px;
+      }
+
+      .auth-note,
+      .auth-error,
+      .session-pill {
+        font-size: 0.9rem;
+        color: var(--muted);
+      }
+
+      .auth-error {
+        color: #9d361e;
+      }
+
+      .session-pill {
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.74);
+      }
+
       @keyframes rise {
         from {
           opacity: 0;
@@ -426,6 +474,9 @@
               <button class="chip" data-prompt="Show me opinion pieces from the Editorial section that discuss geopolitical tensions">Editorial geopolitical tensions</button>
             </div>
           </div>
+
+          <div class="session-pill" id="sessionInfo">Checking session...</div>
+          <button class="chip" id="logoutButton" type="button">Log out</button>
         </aside>
 
         <main class="panel chat">
@@ -468,6 +519,27 @@
       </div>
     </div>
 
+    <div class="auth-shell" id="authGate">
+      <div class="auth-card">
+        <div class="eyebrow">Secure Access</div>
+        <h2 class="title" style="font-size: 1.8rem;">Sign in to the archive</h2>
+        <p class="subtitle">Use your email and password. If the email does not exist yet, the app will create the account and start a 7-day session.</p>
+        <div style="margin-top: 16px;">
+          <label class="label" for="authEmail">Email</label>
+          <input class="control" id="authEmail" type="email" autocomplete="email" />
+        </div>
+        <div style="margin-top: 12px;">
+          <label class="label" for="authPassword">Password</label>
+          <input class="control" id="authPassword" type="password" autocomplete="current-password" />
+        </div>
+        <div class="auth-actions">
+          <button class="send" id="loginButton" type="button">Continue</button>
+          <div class="auth-note">Session duration: 7 days</div>
+          <div class="auth-error" id="authError"></div>
+        </div>
+      </div>
+    </div>
+
     <script>
       const messages = document.getElementById("messages");
       const questionInput = document.getElementById("question");
@@ -479,6 +551,13 @@
       const modalMeta = document.getElementById("modalMeta");
       const modalBody = document.getElementById("modalBody");
       const modalClose = document.getElementById("modalClose");
+      const authGate = document.getElementById("authGate");
+      const authEmail = document.getElementById("authEmail");
+      const authPassword = document.getElementById("authPassword");
+      const authError = document.getElementById("authError");
+      const loginButton = document.getElementById("loginButton");
+      const logoutButton = document.getElementById("logoutButton");
+      const sessionInfo = document.getElementById("sessionInfo");
       const conversationHistory = [];
 
       function addMessage(role, content, citations = []) {
@@ -592,6 +671,10 @@
           });
 
           if (!response.ok) {
+            if (response.status === 401) {
+              openAuthGate();
+              throw new Error("Please sign in to continue");
+            }
             throw new Error(`Request failed with status ${response.status}`);
           }
 
@@ -644,6 +727,7 @@
 
           if (editionsResponse.ok) {
             const editions = await editionsResponse.json();
+            editionFilter.innerHTML = '<option value="">All editions</option>';
             editions.forEach((edition) => {
               const option = document.createElement("option");
               option.value = edition;
@@ -654,6 +738,7 @@
 
           if (sectionsResponse.ok) {
             const sections = await sectionsResponse.json();
+            sectionFilter.innerHTML = '<option value="">All sections</option>';
             sections.forEach((section) => {
               const option = document.createElement("option");
               option.value = section;
@@ -666,7 +751,72 @@
         }
       }
 
-      loadCatalog();
+      function openAuthGate() {
+        authGate.classList.add("open");
+      }
+
+      function closeAuthGate() {
+        authGate.classList.remove("open");
+        authError.textContent = "";
+      }
+
+      async function checkAuth() {
+        const response = await fetch("/auth/status");
+        const data = await response.json();
+        if (!data.authenticated) {
+          sessionInfo.textContent = "Not signed in";
+          openAuthGate();
+          return false;
+        }
+        sessionInfo.textContent = `Signed in as ${data.email}`;
+        closeAuthGate();
+        await loadCatalog();
+        return true;
+      }
+
+      async function login() {
+        authError.textContent = "";
+        loginButton.disabled = true;
+        try {
+          const response = await fetch("/auth/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              email: authEmail.value.trim(),
+              password: authPassword.value,
+            }),
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.detail || `Login failed with status ${response.status}`);
+          }
+          authPassword.value = "";
+          sessionInfo.textContent = `Signed in as ${data.email}`;
+          closeAuthGate();
+          await loadCatalog();
+        } catch (error) {
+          authError.textContent = error.message;
+        } finally {
+          loginButton.disabled = false;
+        }
+      }
+
+      async function logout() {
+        await fetch("/auth/logout", { method: "POST" });
+        sessionInfo.textContent = "Not signed in";
+        openAuthGate();
+      }
+
+      loginButton.addEventListener("click", login);
+      authPassword.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          login();
+        }
+      });
+      logoutButton.addEventListener("click", logout);
+
+      checkAuth();
     </script>
   </body>
 </html>
