@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TOI RAG Chat</title>
+    <style>
+      :root {
+        --bg: #f5efe2;
+        --bg-panel: rgba(255, 252, 245, 0.92);
+        --ink: #1f2a2e;
+        --muted: #5f6b6f;
+        --accent: #b7472a;
+        --accent-soft: #e8b98d;
+        --line: rgba(31, 42, 46, 0.14);
+        --user: #183a4a;
+        --assistant: #f8f1e5;
+        --shadow: 0 24px 60px rgba(83, 54, 21, 0.16);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--ink);
+        font-family: Georgia, "Times New Roman", serif;
+        background:
+          radial-gradient(circle at top left, rgba(183, 71, 42, 0.16), transparent 24rem),
+          radial-gradient(circle at bottom right, rgba(24, 58, 74, 0.12), transparent 24rem),
+          linear-gradient(135deg, #efe2c1 0%, #f8f5ee 45%, #efe8d8 100%);
+      }
+
+      .shell {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+
+      .frame {
+        display: grid;
+        grid-template-columns: 280px minmax(0, 1fr);
+        gap: 18px;
+        min-height: calc(100vh - 48px);
+      }
+
+      .panel {
+        background: var(--bg-panel);
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(16px);
+      }
+
+      .sidebar {
+        padding: 22px 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+
+      .eyebrow {
+        letter-spacing: 0.14em;
+        font-size: 0.73rem;
+        text-transform: uppercase;
+        color: var(--accent);
+        margin-bottom: 8px;
+      }
+
+      .title {
+        margin: 0;
+        font-size: 2.05rem;
+        line-height: 0.96;
+      }
+
+      .subtitle {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.98rem;
+        line-height: 1.5;
+      }
+
+      .label {
+        display: block;
+        font-size: 0.84rem;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+
+      .control {
+        width: 100%;
+        padding: 12px 13px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.84);
+        color: var(--ink);
+        font: inherit;
+      }
+
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .chip {
+        border: 1px solid rgba(183, 71, 42, 0.22);
+        background: rgba(255, 255, 255, 0.62);
+        color: var(--ink);
+        border-radius: 999px;
+        padding: 10px 12px;
+        cursor: pointer;
+        text-align: left;
+        font: inherit;
+        transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+      }
+
+      .chip:hover {
+        transform: translateY(-1px);
+        border-color: rgba(183, 71, 42, 0.45);
+        background: rgba(255, 248, 238, 0.95);
+      }
+
+      .chat {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr) auto;
+        overflow: hidden;
+      }
+
+      .chat-head {
+        padding: 24px 26px 18px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .chat-head h2 {
+        margin: 0 0 8px;
+        font-size: 1.55rem;
+      }
+
+      .chat-head p {
+        margin: 0;
+        color: var(--muted);
+      }
+
+      .messages {
+        padding: 22px 26px;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      .message {
+        max-width: 82%;
+        padding: 16px 18px;
+        border-radius: 20px;
+        border: 1px solid var(--line);
+        animation: rise 180ms ease;
+      }
+
+      .message.user {
+        align-self: flex-end;
+        background: var(--user);
+        color: #f7f6f0;
+        border-color: transparent;
+      }
+
+      .message.assistant {
+        align-self: flex-start;
+        background: var(--assistant);
+      }
+
+      .message.system {
+        align-self: center;
+        background: rgba(255, 255, 255, 0.75);
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      .message.loading {
+        align-self: flex-start;
+        background: rgba(255, 248, 238, 0.88);
+      }
+
+      .meta {
+        font-size: 0.74rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin-bottom: 8px;
+        opacity: 0.76;
+      }
+
+      .body {
+        white-space: pre-wrap;
+        line-height: 1.55;
+      }
+
+      .citations {
+        margin-top: 14px;
+        display: grid;
+        gap: 10px;
+      }
+
+      .citation {
+        padding: 12px 13px;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.72);
+        border: 1px solid var(--line);
+        cursor: pointer;
+        transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+      }
+
+      .citation:hover {
+        transform: translateY(-1px);
+        border-color: rgba(183, 71, 42, 0.45);
+        background: rgba(255, 251, 246, 0.95);
+      }
+
+      .citation strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      .citation small {
+        color: var(--muted);
+      }
+
+      .modal-shell {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: rgba(18, 25, 29, 0.55);
+        z-index: 1000;
+      }
+
+      .modal-shell.open {
+        display: flex;
+      }
+
+      .modal {
+        width: min(760px, 100%);
+        max-height: min(82vh, 900px);
+        overflow: auto;
+        background: rgba(255, 252, 245, 0.98);
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        box-shadow: var(--shadow);
+        padding: 22px 22px 18px;
+      }
+
+      .modal-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
+        margin-bottom: 14px;
+      }
+
+      .modal-head h3 {
+        margin: 0 0 6px;
+        font-size: 1.25rem;
+      }
+
+      .modal-meta {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+
+      .modal-close {
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.84);
+        color: var(--ink);
+        border-radius: 999px;
+        padding: 8px 12px;
+        cursor: pointer;
+        font: inherit;
+      }
+
+      .modal-body {
+        white-space: pre-wrap;
+        line-height: 1.65;
+        color: var(--ink);
+      }
+
+      .loading-dots {
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+      }
+
+      .loading-dots span {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--accent);
+        opacity: 0.25;
+        animation: pulse 1s infinite ease-in-out;
+      }
+
+      .loading-dots span:nth-child(2) {
+        animation-delay: 0.16s;
+      }
+
+      .loading-dots span:nth-child(3) {
+        animation-delay: 0.32s;
+      }
+
+      .composer {
+        padding: 18px 22px 22px;
+        border-top: 1px solid var(--line);
+        background: linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(255,248,238,0.9) 55%);
+      }
+
+      .composer-box {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 12px;
+      }
+
+      textarea {
+        min-height: 74px;
+        resize: vertical;
+      }
+
+      .send {
+        border: none;
+        border-radius: 18px;
+        padding: 0 18px;
+        min-width: 132px;
+        background: linear-gradient(180deg, #c85835 0%, #9d361e 100%);
+        color: #fff7f1;
+        font: inherit;
+        cursor: pointer;
+        transition: transform 140ms ease, box-shadow 140ms ease;
+        box-shadow: 0 10px 24px rgba(157, 54, 30, 0.28);
+      }
+
+      .send:hover:not(:disabled) {
+        transform: translateY(-1px);
+      }
+
+      .send:disabled {
+        opacity: 0.65;
+        cursor: wait;
+      }
+
+      @keyframes rise {
+        from {
+          opacity: 0;
+          transform: translateY(8px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      @keyframes pulse {
+        0%, 80%, 100% {
+          opacity: 0.25;
+          transform: scale(0.9);
+        }
+        40% {
+          opacity: 1;
+          transform: scale(1);
+        }
+      }
+
+      @media (max-width: 960px) {
+        .frame {
+          grid-template-columns: 1fr;
+        }
+
+        .message {
+          max-width: 100%;
+        }
+
+        .composer-box {
+          grid-template-columns: 1fr;
+        }
+
+        .send {
+          min-height: 52px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="frame">
+        <aside class="panel sidebar">
+          <div>
+            <div class="eyebrow">TOI E-Paper RAG</div>
+            <h1 class="title">Ask the feed like a newsroom analyst.</h1>
+            <p class="subtitle">
+              Hybrid retrieval over structured edition metadata plus semantic article content.
+            </p>
+          </div>
+
+          <div>
+            <label class="label" for="editionFilter">Edition Filter</label>
+            <select class="control" id="editionFilter">
+              <option value="">All editions</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="label" for="sectionFilter">Section Filter</label>
+            <select class="control" id="sectionFilter">
+              <option value="">All sections</option>
+            </select>
+          </div>
+
+          <div>
+            <div class="label">Prompt Starters</div>
+            <div class="chips">
+              <button class="chip" data-prompt="Show me all articles published in the Delhi edition on March 11">Delhi edition on March 11</button>
+              <button class="chip" data-prompt="List all articles from the Sports section">Sports section</button>
+              <button class="chip" data-prompt="Find articles related to the Iran war">Iran war</button>
+              <button class="chip" data-prompt="Find articles about the Iran conflict published in the Mumbai edition">Iran conflict in Mumbai</button>
+              <button class="chip" data-prompt="Show me opinion pieces from the Editorial section that discuss geopolitical tensions">Editorial geopolitical tensions</button>
+            </div>
+          </div>
+        </aside>
+
+        <main class="panel chat">
+          <div class="chat-head">
+            <div class="eyebrow">Chat Assistant</div>
+            <h2>Question answering with citations</h2>
+            <p>Ask about editions, sections, political stories, sports coverage, or topic-specific events.</p>
+          </div>
+
+          <div class="messages" id="messages">
+            <div class="message system">
+              <div class="body">Ask a question to test SQL, semantic, or hybrid retrieval. The assistant will answer and attach supporting articles.</div>
+            </div>
+          </div>
+
+          <div class="composer">
+            <div class="composer-box">
+              <textarea
+                id="question"
+                class="control"
+                placeholder="Ask something like: Which Sports section articles covered India winning the World Cup?"
+              ></textarea>
+              <button id="send" class="send">Ask</button>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <div class="modal-shell" id="referenceModal" aria-hidden="true">
+      <div class="modal">
+        <div class="modal-head">
+          <div>
+            <h3 id="modalTitle">Reference</h3>
+            <div class="modal-meta" id="modalMeta"></div>
+          </div>
+          <button class="modal-close" id="modalClose" type="button">Close</button>
+        </div>
+        <div class="modal-body" id="modalBody"></div>
+      </div>
+    </div>
+
+    <script>
+      const messages = document.getElementById("messages");
+      const questionInput = document.getElementById("question");
+      const editionFilter = document.getElementById("editionFilter");
+      const sectionFilter = document.getElementById("sectionFilter");
+      const sendButton = document.getElementById("send");
+      const referenceModal = document.getElementById("referenceModal");
+      const modalTitle = document.getElementById("modalTitle");
+      const modalMeta = document.getElementById("modalMeta");
+      const modalBody = document.getElementById("modalBody");
+      const modalClose = document.getElementById("modalClose");
+      const conversationHistory = [];
+
+      function addMessage(role, content, citations = []) {
+        const node = document.createElement("div");
+        node.className = `message ${role}`;
+
+        if (role !== "system") {
+          const meta = document.createElement("div");
+          meta.className = "meta";
+          meta.textContent = role === "user" ? "You" : "Assistant";
+          node.appendChild(meta);
+        }
+
+        const body = document.createElement("div");
+        body.className = "body";
+        body.textContent = content;
+        node.appendChild(body);
+
+        if (citations.length) {
+          const citationWrap = document.createElement("div");
+          citationWrap.className = "citations";
+          citations.forEach((citation) => {
+            const card = document.createElement("button");
+            card.type = "button";
+            card.className = "citation";
+            card.innerHTML = `
+              <strong>${escapeHtml(citation.headline || "Untitled")}</strong>
+              <small>${escapeHtml(citation.edition || "Unknown edition")} • ${escapeHtml(citation.section || "Unknown section")}</small>
+            `;
+            card.addEventListener("click", () => openReference(citation));
+            citationWrap.appendChild(card);
+          });
+          node.appendChild(citationWrap);
+        }
+
+        messages.appendChild(node);
+        messages.scrollTop = messages.scrollHeight;
+        return node;
+      }
+
+      function addLoadingMessage() {
+        const node = document.createElement("div");
+        node.className = "message assistant loading";
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = "Assistant";
+        node.appendChild(meta);
+
+        const body = document.createElement("div");
+        body.className = "body";
+        body.innerHTML = `Searching the archive <span class="loading-dots"><span></span><span></span><span></span></span>`;
+        node.appendChild(body);
+
+        messages.appendChild(node);
+        messages.scrollTop = messages.scrollHeight;
+        return node;
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }
+
+      function openReference(citation) {
+        modalTitle.textContent = citation.headline || "Untitled";
+        modalMeta.textContent = [
+          citation.edition || "Unknown edition",
+          citation.section || "Unknown section",
+          citation.issue_date || "Unknown date",
+          citation.article_id || "No article id",
+        ].join(" • ");
+        modalBody.textContent = citation.reference_text || "No supporting excerpt available.";
+        referenceModal.classList.add("open");
+        referenceModal.setAttribute("aria-hidden", "false");
+      }
+
+      function closeReference() {
+        referenceModal.classList.remove("open");
+        referenceModal.setAttribute("aria-hidden", "true");
+      }
+
+      async function askQuestion() {
+        const question = questionInput.value.trim();
+        if (!question) return;
+
+        addMessage("user", question);
+        conversationHistory.push({ role: "user", content: question });
+        questionInput.value = "";
+        sendButton.disabled = true;
+        const loadingNode = addLoadingMessage();
+
+        try {
+          const response = await fetch("/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              question,
+              issue_date: "2026-03-11",
+              session_filters: {
+                edition: editionFilter.value || null,
+                section: sectionFilter.value || null,
+              },
+              history: conversationHistory,
+              limit: 10,
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`Request failed with status ${response.status}`);
+          }
+
+          const data = await response.json();
+          loadingNode.remove();
+          addMessage("assistant", data.answer, data.citations || []);
+          conversationHistory.push({ role: "assistant", content: data.answer });
+        } catch (error) {
+          loadingNode.remove();
+          addMessage("system", `Request failed: ${error.message}`);
+        } finally {
+          sendButton.disabled = false;
+          questionInput.focus();
+        }
+      }
+
+      sendButton.addEventListener("click", askQuestion);
+      questionInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          askQuestion();
+        }
+      });
+
+      document.querySelectorAll(".chip").forEach((chip) => {
+        chip.addEventListener("click", () => {
+          questionInput.value = chip.dataset.prompt || "";
+          questionInput.focus();
+        });
+      });
+
+      modalClose.addEventListener("click", closeReference);
+      referenceModal.addEventListener("click", (event) => {
+        if (event.target === referenceModal) {
+          closeReference();
+        }
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && referenceModal.classList.contains("open")) {
+          closeReference();
+        }
+      });
+
+      async function loadCatalog() {
+        try {
+          const [editionsResponse, sectionsResponse] = await Promise.all([
+            fetch("/catalog/editions"),
+            fetch("/catalog/sections"),
+          ]);
+
+          if (editionsResponse.ok) {
+            const editions = await editionsResponse.json();
+            editions.forEach((edition) => {
+              const option = document.createElement("option");
+              option.value = edition;
+              option.textContent = edition;
+              editionFilter.appendChild(option);
+            });
+          }
+
+          if (sectionsResponse.ok) {
+            const sections = await sectionsResponse.json();
+            sections.forEach((section) => {
+              const option = document.createElement("option");
+              option.value = section;
+              option.textContent = section;
+              sectionFilter.appendChild(option);
+            });
+          }
+        } catch (error) {
+          addMessage("system", `Filter catalog failed to load: ${error.message}`);
+        }
+      }
+
+      loadCatalog();
+    </script>
+  </body>
+</html>

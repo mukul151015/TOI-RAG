@@ -1,0 +1,1 @@
+"""TOI RAG FastAPI application."""
