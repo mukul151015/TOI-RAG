@@ -810,10 +810,56 @@ def fetch_sql_articles(issue_date: str | None, edition: str | None, section: str
             where (%s::date is null or i.issue_date = %s::date)
               and (%s::text is null or p.publication_name ilike '%%' || %s::text || '%%')
               and (%s::text is null or s.normalized_section ilike '%%' || %s::text || '%%')
-            order by i.issue_date desc, p.publication_name, a.pageno nulls last, a.id
+              and coalesce(nullif(a.headline, ''), nullif(ab.cleaned_text, '')) is not null
+              and (
+                %s::text is distinct from 'Sports'
+                or lower(coalesce(a.headline, '') || ' ' || left(coalesce(ab.cleaned_text, ''), 220)) ~
+                  '(cricket|football|golf|tennis|hockey|ipl|bcci|coach|match|cup|trophy|champion|squad|player|olympic|medal|surya|rohit|dhoni|goal|league|wt20)'
+              )
+            order by i.issue_date desc, a.id desc
             limit %s
             """,
-            (issue_date, issue_date, edition, edition, section, section, limit),
+            (issue_date, issue_date, edition, edition, section, section, section, limit),
+        )
+        return cur.fetchall()
+
+
+def fetch_sql_article_count(issue_date: str | None, edition: str | None, section: str | None) -> int:
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            select count(*) as article_count
+            from articles a
+            join publication_issues pi on pi.id = a.publication_issue_id
+            join publications p on p.id = pi.publication_id
+            join issues i on i.id = pi.issue_id
+            left join sections s on s.id = a.section_id
+            where (%s::date is null or i.issue_date = %s::date)
+              and (%s::text is null or p.publication_name ilike '%%' || %s::text || '%%')
+              and (%s::text is null or s.normalized_section ilike '%%' || %s::text || '%%')
+            """,
+            (issue_date, issue_date, edition, edition, section, section),
+        )
+        return int(cur.fetchone()["article_count"])
+
+
+def fetch_matching_publications(issue_date: str | None, edition_term: str) -> list[dict[str, Any]]:
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            select
+              p.publication_name,
+              count(*) as article_count
+            from articles a
+            join publication_issues pi on pi.id = a.publication_issue_id
+            join publications p on p.id = pi.publication_id
+            join issues i on i.id = pi.issue_id
+            where (%s::date is null or i.issue_date = %s::date)
+              and p.publication_name ilike '%%' || %s::text || '%%'
+            group by p.publication_name
+            order by article_count desc, p.publication_name
+            """,
+            (issue_date, issue_date, edition_term),
         )
         return cur.fetchall()
 
@@ -853,6 +899,54 @@ def semantic_search(
             )
             """,
             (json.dumps(embedding), issue_date, edition, section, limit),
+        )
+        return cur.fetchall()
+
+
+def keyword_search(
+    query_text: str,
+    issue_date: str | None,
+    edition: str | None,
+    section: str | None,
+    limit: int,
+):
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            with q as (
+              select websearch_to_tsquery('english', %s) as tsq
+            )
+            select
+              a.id as article_id,
+              a.external_article_id,
+              a.headline,
+              s.normalized_section as section,
+              p.publication_name as edition,
+              i.issue_date,
+              left(ab.body_text, 400) as excerpt,
+              ts_rank_cd(
+                setweight(to_tsvector('english', coalesce(a.headline, '')), 'A') ||
+                setweight(coalesce(ab.body_tsv, to_tsvector('english', '')), 'B'),
+                q.tsq
+              ) as lexical_score
+            from q
+            join articles a on true
+            join publication_issues pi on pi.id = a.publication_issue_id
+            join publications p on p.id = pi.publication_id
+            join issues i on i.id = pi.issue_id
+            left join sections s on s.id = a.section_id
+            left join article_bodies ab on ab.article_id = a.id
+            where (%s::date is null or i.issue_date = %s::date)
+              and (%s::text is null or p.publication_name ilike '%%' || %s::text || '%%')
+              and (%s::text is null or s.normalized_section ilike '%%' || %s::text || '%%')
+              and (
+                setweight(to_tsvector('english', coalesce(a.headline, '')), 'A') ||
+                setweight(coalesce(ab.body_tsv, to_tsvector('english', '')), 'B')
+              ) @@ q.tsq
+            order by lexical_score desc, a.id
+            limit %s
+            """,
+            (query_text, issue_date, issue_date, edition, edition, section, section, limit),
         )
         return cur.fetchall()
 

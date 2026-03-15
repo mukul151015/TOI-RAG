@@ -24,7 +24,8 @@
 
       body {
         margin: 0;
-        min-height: 100vh;
+        height: 100vh;
+        overflow: hidden;
         color: var(--ink);
         font-family: Georgia, "Times New Roman", serif;
         background:
@@ -37,13 +38,15 @@
         max-width: 1200px;
         margin: 0 auto;
         padding: 24px;
+        height: 100vh;
       }
 
       .frame {
         display: grid;
         grid-template-columns: 280px minmax(0, 1fr);
         gap: 18px;
-        min-height: calc(100vh - 48px);
+        height: calc(100vh - 48px);
+        overflow: hidden;
       }
 
       .panel {
@@ -59,6 +62,7 @@
         display: flex;
         flex-direction: column;
         gap: 18px;
+        overflow: hidden;
       }
 
       .eyebrow {
@@ -127,6 +131,7 @@
         display: grid;
         grid-template-rows: auto minmax(0, 1fr) auto;
         overflow: hidden;
+        min-height: 0;
       }
 
       .chat-head {
@@ -150,6 +155,7 @@
         display: flex;
         flex-direction: column;
         gap: 16px;
+        min-height: 0;
       }
 
       .message {
@@ -420,8 +426,19 @@
       }
 
       @media (max-width: 960px) {
+        body {
+          height: auto;
+          overflow: auto;
+        }
+
+        .shell {
+          height: auto;
+        }
+
         .frame {
           grid-template-columns: 1fr;
+          height: auto;
+          overflow: visible;
         }
 
         .message {

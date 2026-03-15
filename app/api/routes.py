@@ -18,6 +18,7 @@ from app.services.auth_service import (
     log_chat_interaction,
     logout,
     require_authenticated_user,
+    update_session_context,
 )
 from app.services.chat_service import answer_question
 from app.services.embedding_backfill import backfill_embeddings, get_embedding_status
@@ -106,8 +107,10 @@ def chat_route(payload: ChatRequest, request: Request):
         payload.limit,
         payload.session_filters,
         payload.history,
+        session.get("session_context") if session else None,
     )
     if session:
+        update_session_context(session["session_id"], result.session_context)
         log_chat_interaction(
             user_id=session["user_id"],
             session_id=session["session_id"],

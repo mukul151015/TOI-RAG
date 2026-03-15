@@ -26,6 +26,10 @@ SEMANTIC_CUES = [
     "t20",
     "t-20",
     "budget",
+    "middle class",
+    "inflation",
+    "prices",
+    "growth",
 ]
 STRUCTURED_CUES = [
     "show me",
@@ -38,6 +42,14 @@ STRUCTURED_CUES = [
 ]
 BROAD_LIST_CUES = [
     "show me all",
+    "show me articles",
+    "show me stories",
+    "show me pieces",
+    "show me opinion pieces",
+    "which stories",
+    "what stories",
+    "which opinion pieces",
+    "what opinion pieces",
     "list all",
     "all articles",
     "which sections had the most articles",
@@ -74,7 +86,13 @@ def route_query(query: str, issue_date: str | None = None) -> RoutedQuery:
     normalized_query = normalize_user_query(query)
     lowered = normalized_query.lower()
     edition = _extract_edition(lowered)
+    if re.search(r"\bdelhi edition\b", lowered):
+        edition = "Delhi"
     section = _extract_section(lowered)
+    if not section and _looks_like_sports_intent(lowered):
+        section = "Sports"
+    if not section and _looks_like_business_intent(lowered):
+        section = "Business"
     has_semantic = any(phrase in lowered for phrase in SEMANTIC_CUES)
     has_structured = bool(edition or section) or any(
         phrase in lowered for phrase in STRUCTURED_CUES
@@ -106,7 +124,22 @@ def is_section_count_query(query: str) -> bool:
 
 def is_broad_listing_query(query: str) -> bool:
     lowered = query.lower()
-    return any(phrase in lowered for phrase in BROAD_LIST_CUES)
+    if any(phrase in lowered for phrase in BROAD_LIST_CUES):
+        return True
+    patterns = [
+        r"\bshow me\b.*\barticles?\b",
+        r"\bshow me\b.*\bstories\b",
+        r"\bshow me\b.*\bpieces\b",
+        r"\bwhich stories\b",
+        r"\bwhat stories\b",
+        r"\bwhich opinion pieces\b",
+        r"\bwhat opinion pieces\b",
+        r"\blist\b.*\barticles?\b",
+        r"\blist\b.*\bstories\b",
+        r"\bgive me\b.*\barticles?\b",
+        r"\bgive me\b.*\bstories\b",
+    ]
+    return any(re.search(pattern, lowered) for pattern in patterns)
 
 
 def normalize_user_query(query: str) -> str:
@@ -193,6 +226,11 @@ def _extract_edition(text: str) -> str | None:
     _, alias, publication_names = matches[0]
     if len(publication_names) == 1:
         return next(iter(publication_names))
+    if alias == "delhi":
+        return "Delhi"
+    canonical = _main_publication_for_family(alias, publication_names)
+    if canonical:
+        return canonical
     return alias.title()
 
 
@@ -203,13 +241,27 @@ def _extract_section(text: str) -> str | None:
         for section in section_catalog
         if section
     }
-    for alias in ["sports", "sport", "city", "nation", "editorial", "opinion", "business", "world", "entertainment", "frontpage"]:
+    alias_map = {
+        "sports": "sports",
+        "sport": "sports",
+        "city": "city",
+        "nation": "nation",
+        "editorial": "edit",
+        "opinion": "edit",
+        "edit": "edit",
+        "oped": "oped",
+        "op-ed": "oped",
+        "business": "business",
+        "world": "world",
+        "entertainment": "entertainment",
+        "frontpage": "frontpage",
+        "front page": "frontpage",
+    }
+    for alias, normalized_alias in alias_map.items():
+        if normalized_alias == "world" and re.search(r"\bworld cup\b", text):
+            continue
         if re.search(rf"\b{re.escape(alias)}\b", text):
-            if alias == "sport":
-                return normalized_map.get("sports", "Sports")
-            if alias == "opinion":
-                return normalized_map.get("editorial", "Editorial")
-            return normalized_map.get(alias, alias.title())
+            return normalized_map.get(normalized_alias, normalized_alias.title())
     for normalized, original in normalized_map.items():
         if re.search(rf"\b{re.escape(normalized)}\b", _normalize(text)):
             return original
@@ -265,9 +317,44 @@ def _expand_semantic_query(query: str) -> str:
         additions.append("t20 world cup")
     if "covered" in lowered and "victory" in lowered:
         additions.append("coverage")
+    if "budget" in lowered and "middle class" in lowered:
+        additions.extend(["inflation prices households tax growth economists"])
+    if "budget" in lowered:
+        additions.extend(["economy prices inflation business"])
     if additions:
         expanded = f"{expanded} {' '.join(additions)}"
     return re.sub(r"\s+", " ", expanded).strip()
+
+
+def _looks_like_sports_intent(text: str) -> bool:
+    sports_cues = [
+        "world cup",
+        "t20",
+        "bcci",
+        "champions",
+        "cricket",
+        "football",
+        "ipl",
+        "match",
+        "trophy",
+    ]
+    return any(cue in text for cue in sports_cues)
+
+
+def _looks_like_business_intent(text: str) -> bool:
+    business_cues = [
+        "budget",
+        "middle class",
+        "inflation",
+        "price rise",
+        "prices",
+        "economists",
+        "growth",
+        "tax",
+        "fuel inflation",
+        "oil prices",
+    ]
+    return any(cue in text for cue in business_cues)
 
 
 def _build_publication_alias_map() -> dict[str, set[str]]:
@@ -325,3 +412,43 @@ def _publication_family_alias(publication_id: str, publication_name: str) -> str
     normalized = re.sub(r"^toi", "", normalized)
     normalized = re.sub(r"(h?bs)$", "", normalized)
     return normalized or None
+
+
+def _main_publication_for_family(alias: str, publication_names: set[str]) -> str | None:
+    ordered = sorted(publication_names)
+    alias_norm = _normalize(alias)
+    special_targets = {
+        "mumbai": "mumbaicity",
+        "kolkata": "kolkatacity",
+        "chennai": "chennai",
+        "bangalore": "bangalorecity",
+        "hyderabad": "hyderabad",
+        "lucknow": "lucknowcity",
+        "nagpur": "nagpurcity",
+    }
+    target = special_targets.get(alias_norm)
+    if target:
+        for publication_name in ordered:
+            right = publication_name.split(" - ", 1)[1] if " - " in publication_name else publication_name
+            right_norm = _normalize(right.replace("_Digital", ""))
+            if target in right_norm:
+                return publication_name
+
+    def score(publication_name: str) -> tuple[int, str]:
+        right = publication_name.split(" - ", 1)[1] if " - " in publication_name else publication_name
+        right_norm = _normalize(right.replace("_Digital", ""))
+        if alias_norm and alias_norm in right_norm and "city" in right_norm:
+            return (1, publication_name)
+        if alias_norm and alias_norm in right_norm:
+            return (2, publication_name)
+        if "city" in right_norm:
+            return (3, publication_name)
+        return (4, publication_name)
+    candidate = sorted(ordered, key=score)[0]
+    candidate_right = candidate.split(" - ", 1)[1] if " - " in candidate else candidate
+    candidate_norm = _normalize(candidate_right.replace("_Digital", ""))
+    if alias_norm in candidate_norm and "city" in candidate_norm:
+        return candidate
+    if alias_norm in candidate_norm:
+        return candidate
+    return None
