@@ -1,0 +1,29 @@
+export const corsHeaders: Record<string, string> = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+};
+
+export function corsResponse(): Response {
+  return new Response(null, { status: 204, headers: corsHeaders });
+}
+
+export function jsonResponse(
+  body: unknown,
+  status = 200,
+  extra?: Record<string, string>,
+): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json",
+      ...extra,
+    },
+  });
+}
+
+export function errorResponse(detail: string, status = 500): Response {
+  return jsonResponse({ detail }, status);
+}
