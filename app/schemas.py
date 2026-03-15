@@ -72,6 +72,7 @@ class ChatResponse(BaseModel):
     answer: str
     mode: Literal["sql", "semantic", "hybrid"]
     citations: list[dict[str, Any]]
+    session_context: dict[str, Any] | None = None
 
 
 class AuthStatusResponse(BaseModel):

@@ -113,7 +113,8 @@ def get_authenticated_session(request: Request) -> dict | None:
             select
               s.id as session_id,
               s.user_id,
-              u.email
+              u.email,
+              s.session_context
             from user_sessions s
             join app_users u on u.id = s.user_id
             where s.session_token = %s
@@ -122,6 +123,20 @@ def get_authenticated_session(request: Request) -> dict | None:
             (session_token,),
         )
         return cur.fetchone()
+
+
+def update_session_context(session_id: int, session_context: dict | None) -> None:
+    if session_context is None:
+        return
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            update user_sessions
+            set session_context = %s::jsonb
+            where id = %s
+            """,
+            (json.dumps(session_context, default=str), session_id),
+        )
 
 
 def require_authenticated_user(request: Request) -> dict:
@@ -164,8 +179,8 @@ def log_chat_interaction(
                 answer,
                 issue_date,
                 mode,
-                json.dumps(session_filters or {}),
-                json.dumps(citations or []),
+                json.dumps(session_filters or {}, default=str),
+                json.dumps(citations or [], default=str),
             ),
         )
 
