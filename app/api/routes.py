@@ -12,6 +12,7 @@ from app.schemas import (
     QueryRequest,
 )
 from app.services.auth_service import (
+    fetch_recent_chat_traces,
     get_authenticated_session,
     get_authenticated_user,
     login_or_create,
@@ -120,6 +121,7 @@ def chat_route(payload: ChatRequest, request: Request):
             mode=result.mode,
             session_filters=payload.session_filters,
             citations=result.citations,
+            trace_data=result.debug_trace,
         )
     return result
 
@@ -134,3 +136,10 @@ def editions_catalog_route(request: Request):
 def sections_catalog_route(request: Request):
     require_authenticated_user(request)
     return fetch_section_catalog()
+
+
+@router.get("/debug/chat-traces")
+def chat_traces_route(request: Request, limit: int = 20):
+    user = require_authenticated_user(request)
+    safe_limit = max(1, min(limit, 100))
+    return fetch_recent_chat_traces(user_id=user["id"], limit=safe_limit)

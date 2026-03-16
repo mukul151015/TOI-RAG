@@ -8,8 +8,18 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_host: str = "0.0.0.0"
     app_port: int = 8000
+    auth_bypass_in_dev: bool = True
 
     supabase_db_dsn: str
+    supabase_db_direct_dsn: str | None = None
+    db_auto_ensure_schema: bool = False
+    db_auto_ensure_runtime_schema: bool = True
+    db_connect_timeout_seconds: int = 5
+    db_pool_timeout_seconds: float = 8.0
+    db_pool_min_size: int = 1
+    db_pool_max_size: int = 4
+    db_retry_attempts: int = 3
+    db_retry_base_delay_seconds: float = 1.0
     openai_api_key: str
     openai_embedding_model: str = "text-embedding-3-small"
     openai_chat_model: str = "gpt-4.1-mini"

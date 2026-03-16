@@ -6,6 +6,11 @@ from typing import Any
 from app.db.database import get_cursor
 
 
+_publication_catalog_fallback: list[dict[str, Any]] = []
+_section_catalog_fallback: list[str] = []
+_author_catalog_fallback: list[str] = []
+
+
 def _ensure_organization(cur, org_id: str) -> None:
     cur.execute(
         """
@@ -764,29 +769,62 @@ def get_article_resume_point(article_id: int) -> dict[str, Any] | None:
 
 @lru_cache(maxsize=1)
 def fetch_publication_catalog() -> list[dict[str, Any]]:
-    with get_cursor() as cur:
-        cur.execute(
-            """
-            select id, publication_name
-            from publications
-            order by publication_name
-            """
-        )
-        return cur.fetchall()
+    global _publication_catalog_fallback
+    try:
+        with get_cursor() as cur:
+            cur.execute(
+                """
+                select id, publication_name
+                from publications
+                order by publication_name
+                """
+            )
+            rows = cur.fetchall()
+            _publication_catalog_fallback = rows
+            return rows
+    except Exception:
+        return list(_publication_catalog_fallback)
 
 
 @lru_cache(maxsize=1)
 def fetch_section_catalog() -> list[str]:
-    with get_cursor() as cur:
-        cur.execute(
-            """
-            select distinct normalized_section
-            from sections
-            where normalized_section is not null
-            order by normalized_section
-            """
-        )
-        return [row["normalized_section"] for row in cur.fetchall()]
+    global _section_catalog_fallback
+    try:
+        with get_cursor() as cur:
+            cur.execute(
+                """
+                select distinct normalized_section
+                from sections
+                where normalized_section is not null
+                order by normalized_section
+                """
+            )
+            rows = [row["normalized_section"] for row in cur.fetchall()]
+            _section_catalog_fallback = rows
+            return rows
+    except Exception:
+        return list(_section_catalog_fallback)
+
+
+@lru_cache(maxsize=1)
+def fetch_author_catalog() -> list[str]:
+    global _author_catalog_fallback
+    try:
+        with get_cursor() as cur:
+            cur.execute(
+                """
+                select distinct display_name
+                from authors
+                where display_name is not null
+                  and btrim(display_name) <> ''
+                order by display_name
+                """
+            )
+            rows = [row["display_name"] for row in cur.fetchall()]
+            _author_catalog_fallback = rows
+            return rows
+    except Exception:
+        return list(_author_catalog_fallback)
 
 
 def fetch_sql_articles(issue_date: str | None, edition: str | None, section: str | None, limit: int):
@@ -843,6 +881,256 @@ def fetch_sql_article_count(issue_date: str | None, edition: str | None, section
         return int(cur.fetchone()["article_count"])
 
 
+def fetch_author_articles(
+    issue_date: str | None,
+    author: str,
+    limit: int,
+    *,
+    edition: str | None = None,
+    section: str | None = None,
+):
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            select
+              a.id,
+              a.external_article_id,
+              a.headline,
+              s.normalized_section as section,
+              p.publication_name as edition,
+              i.issue_date,
+              left(ab.body_text, 400) as excerpt,
+              au.display_name as author
+            from articles a
+            join publication_issues pi on pi.id = a.publication_issue_id
+            join publications p on p.id = pi.publication_id
+            join issues i on i.id = pi.issue_id
+            join article_authors aa on aa.article_id = a.id
+            join authors au on au.id = aa.author_id
+            left join sections s on s.id = a.section_id
+            left join article_bodies ab on ab.article_id = a.id
+            where (%s::date is null or i.issue_date = %s::date)
+              and (%s::text is null or p.publication_name ilike '%%' || %s::text || '%%')
+              and (%s::text is null or s.normalized_section ilike '%%' || %s::text || '%%')
+              and lower(au.display_name) = lower(%s)
+            order by i.issue_date desc, a.id desc
+            limit %s
+            """,
+            (issue_date, issue_date, edition, edition, section, section, author, limit),
+        )
+        return cur.fetchall()
+
+
+def fetch_author_article_count(
+    issue_date: str | None,
+    author: str,
+    *,
+    edition: str | None = None,
+    section: str | None = None,
+) -> int:
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            select count(*) as article_count
+            from articles a
+            join publication_issues pi on pi.id = a.publication_issue_id
+            join publications p on p.id = pi.publication_id
+            join issues i on i.id = pi.issue_id
+            join article_authors aa on aa.article_id = a.id
+            join authors au on au.id = aa.author_id
+            left join sections s on s.id = a.section_id
+            where (%s::date is null or i.issue_date = %s::date)
+              and (%s::text is null or p.publication_name ilike '%%' || %s::text || '%%')
+              and (%s::text is null or s.normalized_section ilike '%%' || %s::text || '%%')
+              and lower(au.display_name) = lower(%s)
+            """,
+            (issue_date, issue_date, edition, edition, section, section, author),
+        )
+        return int(cur.fetchone()["article_count"])
+
+
+def fetch_entity_mention_articles(
+    issue_date: str | None,
+    entity_terms: list[str],
+    limit: int,
+    *,
+    edition: str | None = None,
+    section: str | None = None,
+    headline_priority_only: bool = False,
+):
+    if not entity_terms:
+        return []
+    normalized_terms = [term.lower() for term in entity_terms if term]
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            with scored_articles as (
+              select
+                a.id,
+                a.external_article_id,
+                a.headline,
+                s.normalized_section as section,
+                p.publication_name as edition,
+                i.issue_date,
+                left(ab.body_text, 400) as excerpt,
+                max(
+                  case
+                    when lower(coalesce(a.headline, '')) like '%%' || term || '%%' then 6
+                    when lower(left(coalesce(ab.cleaned_text, ab.body_text, ''), 320)) like '%%' || term || '%%' then 4
+                    when lower(coalesce(ab.cleaned_text, ab.body_text, '')) like '%%' || term || '%%' then 1
+                    else 0
+                  end
+                ) as mention_score
+              from articles a
+              join publication_issues pi on pi.id = a.publication_issue_id
+              join publications p on p.id = pi.publication_id
+              join issues i on i.id = pi.issue_id
+              left join sections s on s.id = a.section_id
+              left join article_bodies ab on ab.article_id = a.id
+              cross join unnest(%s::text[]) term
+              where (%s::date is null or i.issue_date = %s::date)
+                and (%s::text is null or p.publication_name ilike '%%' || %s::text || '%%')
+                and (%s::text is null or s.normalized_section ilike '%%' || %s::text || '%%')
+                and lower(
+                  coalesce(a.headline, '') || ' ' || coalesce(ab.body_text, '') || ' ' || coalesce(ab.cleaned_text, '')
+                ) like '%%' || term || '%%'
+              group by
+                a.id,
+                a.external_article_id,
+                a.headline,
+                s.normalized_section,
+                p.publication_name,
+                i.issue_date,
+                left(ab.body_text, 400)
+            )
+            select
+              id,
+              external_article_id,
+              headline,
+              section,
+              edition,
+              issue_date,
+              excerpt
+            from scored_articles
+            where (%s = false or mention_score >= 6)
+            order by mention_score desc, issue_date desc, id desc
+            limit %s
+            """,
+            (normalized_terms, issue_date, issue_date, edition, edition, section, section, headline_priority_only, limit),
+        )
+        return cur.fetchall()
+
+
+def fetch_entity_mention_count(
+    issue_date: str | None,
+    entity_terms: list[str],
+    *,
+    edition: str | None = None,
+    section: str | None = None,
+    headline_priority_only: bool = False,
+) -> int:
+    if not entity_terms:
+        return 0
+    normalized_terms = [term.lower() for term in entity_terms if term]
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            with scored_articles as (
+              select
+                a.id,
+                max(
+                  case
+                    when lower(coalesce(a.headline, '')) like '%%' || term || '%%' then 6
+                    when lower(left(coalesce(ab.cleaned_text, ab.body_text, ''), 320)) like '%%' || term || '%%' then 4
+                    when lower(coalesce(ab.cleaned_text, ab.body_text, '')) like '%%' || term || '%%' then 1
+                    else 0
+                  end
+                ) as mention_score
+              from articles a
+              join publication_issues pi on pi.id = a.publication_issue_id
+              join publications p on p.id = pi.publication_id
+              join issues i on i.id = pi.issue_id
+              left join sections s on s.id = a.section_id
+              left join article_bodies ab on ab.article_id = a.id
+              cross join unnest(%s::text[]) term
+              where (%s::date is null or i.issue_date = %s::date)
+                and (%s::text is null or p.publication_name ilike '%%' || %s::text || '%%')
+                and (%s::text is null or s.normalized_section ilike '%%' || %s::text || '%%')
+                and lower(
+                  coalesce(a.headline, '') || ' ' || coalesce(ab.body_text, '') || ' ' || coalesce(ab.cleaned_text, '')
+                ) like '%%' || term || '%%'
+              group by a.id
+            )
+            select count(*) as article_count
+            from scored_articles
+            where mention_score >= case when %s then 6 else 4 end
+            """,
+            (normalized_terms, issue_date, issue_date, edition, edition, section, section, headline_priority_only),
+        )
+        return int(cur.fetchone()["article_count"])
+
+
+def fetch_entity_mention_contexts(
+    issue_date: str | None,
+    entity_terms: list[str],
+    *,
+    edition: str | None = None,
+    section: str | None = None,
+    limit: int = 5,
+    headline_priority_only: bool = False,
+) -> list[dict[str, Any]]:
+    if not entity_terms:
+        return []
+    normalized_terms = [term.lower() for term in entity_terms if term]
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            with scored_articles as (
+              select
+                a.id,
+                a.headline,
+                s.normalized_section as section,
+                coalesce(ab.body_text, ab.cleaned_text, '') as article_text,
+                max(
+                  case
+                    when lower(coalesce(a.headline, '')) like '%%' || term || '%%' then 6
+                    when lower(left(coalesce(ab.cleaned_text, ab.body_text, ''), 320)) like '%%' || term || '%%' then 4
+                    when lower(coalesce(ab.cleaned_text, ab.body_text, '')) like '%%' || term || '%%' then 1
+                    else 0
+                  end
+                ) as mention_score
+              from articles a
+              join publication_issues pi on pi.id = a.publication_issue_id
+              join publications p on p.id = pi.publication_id
+              join issues i on i.id = pi.issue_id
+              left join sections s on s.id = a.section_id
+              left join article_bodies ab on ab.article_id = a.id
+              cross join unnest(%s::text[]) term
+              where (%s::date is null or i.issue_date = %s::date)
+                and (%s::text is null or p.publication_name ilike '%%' || %s::text || '%%')
+                and (%s::text is null or s.normalized_section ilike '%%' || %s::text || '%%')
+                and a.headline is not null
+                and lower(
+                  coalesce(a.headline, '') || ' ' || coalesce(ab.body_text, '') || ' ' || coalesce(ab.cleaned_text, '')
+                ) like '%%' || term || '%%'
+              group by a.id, a.headline, s.normalized_section, coalesce(ab.body_text, ab.cleaned_text, '')
+            )
+            select
+              headline,
+              count(*) as article_count,
+              min(section) as section,
+              left(min(article_text), 300) as excerpt
+            from scored_articles
+            where mention_score >= case when %s then 6 else 4 end
+            group by headline
+            order by max(mention_score) desc, article_count desc, headline
+            limit %s
+            """,
+            (normalized_terms, issue_date, issue_date, edition, edition, section, section, headline_priority_only, limit),
+        )
+        return cur.fetchall()
+
+
 def fetch_matching_publications(issue_date: str | None, edition_term: str) -> list[dict[str, Any]]:
     with get_cursor() as cur:
         cur.execute(
@@ -891,14 +1179,54 @@ def semantic_search(
     section: str | None,
     limit: int,
 ):
+    candidate_limit = max(limit * 40, 400)
+    if not issue_date and not edition and not section:
+        candidate_limit = max(limit * 10, 200)
     with get_cursor() as cur:
         cur.execute(
             """
-            select * from match_article_chunks_filtered(
-              %s::vector, %s::date, %s, %s, %s
+            with candidates as (
+              select
+                c.id,
+                c.article_id,
+                c.chunk_text,
+                c.embedding <=> %s::vector as distance
+              from article_chunks c
+              order by c.embedding <=> %s::vector
+              limit %s
             )
+            select
+              c.id as chunk_id,
+              a.id as article_id,
+              c.chunk_text,
+              1 - c.distance as similarity,
+              a.headline,
+              s.normalized_section as section,
+              p.publication_name
+            from candidates c
+            join articles a on a.id = c.article_id
+            join publication_issues pi on pi.id = a.publication_issue_id
+            join publications p on p.id = pi.publication_id
+            join issues i on i.id = pi.issue_id
+            left join sections s on s.id = a.section_id
+            where (%s::date is null or i.issue_date = %s::date)
+              and (%s::text is null or p.publication_name ilike '%%' || %s::text || '%%')
+              and (%s::text is null or s.normalized_section ilike '%%' || %s::text || '%%')
+            order by c.distance
+            limit %s
             """,
-            (json.dumps(embedding), issue_date, edition, section, limit),
+            (
+                json.dumps(embedding),
+                json.dumps(embedding),
+                candidate_limit,
+                issue_date,
+                issue_date,
+                edition,
+                edition,
+                section,
+                section,
+                limit,
+            ),
         )
         return cur.fetchall()
 

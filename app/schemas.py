@@ -56,9 +56,11 @@ class ChatRequest(BaseModel):
 
 class RoutedQuery(BaseModel):
     mode: Literal["sql", "semantic", "hybrid"]
+    intent: Literal["lookup", "article_count", "topic_count", "fact_lookup", "author_lookup", "author_count"] = "lookup"
     issue_date: str | None = None
     edition: str | None = None
     section: str | None = None
+    author: str | None = None
     semantic_query: str | None = None
 
 
@@ -73,6 +75,7 @@ class ChatResponse(BaseModel):
     mode: Literal["sql", "semantic", "hybrid"]
     citations: list[dict[str, Any]]
     session_context: dict[str, Any] | None = None
+    debug_trace: dict[str, Any] | None = None
 
 
 class AuthStatusResponse(BaseModel):

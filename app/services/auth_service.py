@@ -6,6 +6,8 @@ import hmac
 import json
 import secrets
 
+from psycopg import Error as PsycopgError
+from psycopg.errors import UndefinedColumn
 from fastapi import HTTPException, Request, Response, status
 
 from app.core.config import get_settings
@@ -15,6 +17,12 @@ from app.db.database import get_cursor
 settings = get_settings()
 SESSION_COOKIE = "toi_rag_session"
 SESSION_DAYS = 7
+DEV_USER = {"id": 0, "email": "local-dev@toi"}
+DEV_SESSION = {"session_id": 0, "user_id": 0, "email": "local-dev@toi", "session_context": {}}
+
+
+def _dev_auth_enabled() -> bool:
+    return settings.app_env == "development" and settings.auth_bypass_in_dev
 
 
 def login_or_create(email: str, password: str, response: Response) -> dict[str, str]:
@@ -86,47 +94,61 @@ def logout(response: Response, session_token: str | None) -> None:
 
 
 def get_authenticated_user(request: Request) -> dict | None:
+    if _dev_auth_enabled():
+        return DEV_USER
     session_token = request.cookies.get(SESSION_COOKIE)
     if not session_token:
         return None
-    with get_cursor() as cur:
-        cur.execute(
-            """
-            select u.id, u.email
-            from user_sessions s
-            join app_users u on u.id = s.user_id
-            where s.session_token = %s
-              and s.expires_at > now()
-            """,
-            (session_token,),
-        )
-        return cur.fetchone()
+    try:
+        with get_cursor() as cur:
+            cur.execute(
+                """
+                select u.id, u.email
+                from user_sessions s
+                join app_users u on u.id = s.user_id
+                where s.session_token = %s
+                  and s.expires_at > now()
+                """,
+                (session_token,),
+            )
+            return cur.fetchone()
+    except PsycopgError:
+        if _dev_auth_enabled():
+            return DEV_USER
+        raise
 
 
 def get_authenticated_session(request: Request) -> dict | None:
+    if _dev_auth_enabled():
+        return DEV_SESSION
     session_token = request.cookies.get(SESSION_COOKIE)
     if not session_token:
         return None
-    with get_cursor() as cur:
-        cur.execute(
-            """
-            select
-              s.id as session_id,
-              s.user_id,
-              u.email,
-              s.session_context
-            from user_sessions s
-            join app_users u on u.id = s.user_id
-            where s.session_token = %s
-              and s.expires_at > now()
-            """,
-            (session_token,),
-        )
-        return cur.fetchone()
+    try:
+        with get_cursor() as cur:
+            cur.execute(
+                """
+                select
+                  s.id as session_id,
+                  s.user_id,
+                  u.email,
+                  s.session_context
+                from user_sessions s
+                join app_users u on u.id = s.user_id
+                where s.session_token = %s
+                  and s.expires_at > now()
+                """,
+                (session_token,),
+            )
+            return cur.fetchone()
+    except PsycopgError:
+        if _dev_auth_enabled():
+            return DEV_SESSION
+        raise
 
 
 def update_session_context(session_id: int, session_context: dict | None) -> None:
-    if session_context is None:
+    if session_context is None or session_id <= 0:
         return
     with get_cursor() as cur:
         cur.execute(
@@ -156,33 +178,83 @@ def log_chat_interaction(
     mode: str | None,
     session_filters: dict | None,
     citations: list[dict] | None,
+    trace_data: dict | None,
 ) -> None:
+    if session_id <= 0:
+        return
+    with get_cursor() as cur:
+        params = (
+            user_id,
+            session_id,
+            question,
+            answer,
+            issue_date,
+            mode,
+            json.dumps(session_filters or {}, default=str),
+            json.dumps(citations or [], default=str),
+            json.dumps(trace_data or {}, default=str),
+        )
+        try:
+            cur.execute(
+                """
+                insert into chat_interactions (
+                  user_id,
+                  session_id,
+                  user_question,
+                  system_answer,
+                  issue_date,
+                  mode,
+                  session_filters,
+                  citations,
+                  trace_data
+                )
+                values (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb)
+                """,
+                params,
+            )
+        except UndefinedColumn:
+            cur.execute(
+                """
+                insert into chat_interactions (
+                  user_id,
+                  session_id,
+                  user_question,
+                  system_answer,
+                  issue_date,
+                  mode,
+                  session_filters,
+                  citations
+                )
+                values (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
+                """,
+                params[:-1],
+            )
+
+
+def fetch_recent_chat_traces(*, user_id: int | None = None, limit: int = 20) -> list[dict]:
     with get_cursor() as cur:
         cur.execute(
             """
-            insert into chat_interactions (
-              user_id,
-              session_id,
-              user_question,
-              system_answer,
-              issue_date,
-              mode,
-              session_filters,
-              citations
-            )
-            values (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
+            select
+              ci.id,
+              ci.user_question,
+              ci.system_answer,
+              ci.mode,
+              ci.issue_date,
+              ci.session_filters,
+              ci.citations,
+              ci.trace_data,
+              ci.created_at,
+              u.email
+            from chat_interactions ci
+            join app_users u on u.id = ci.user_id
+            where (%s::bigint is null or ci.user_id = %s::bigint)
+            order by ci.created_at desc
+            limit %s
             """,
-            (
-                user_id,
-                session_id,
-                question,
-                answer,
-                issue_date,
-                mode,
-                json.dumps(session_filters or {}, default=str),
-                json.dumps(citations or [], default=str),
-            ),
+            (user_id, user_id, limit),
         )
+        return cur.fetchall()
 
 
 def _hash_password(password: str) -> str:
