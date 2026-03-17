@@ -1,0 +1,51 @@
+TOI RAG Live Benchmark Report
+Run date: 2026-03-17
+Issue date: 2026-03-11
+Cases: 30
+Prompt turns: 60
+
+Progress log:
+
+SQL001 [sql] - PASS
+Initial token failures: none
+Follow token failures: none
+
+SQL002 [sql] - PASS
+Initial token failures: none
+Follow token failures: none
+
+SQL003 [sql] - PASS
+Initial token failures: none
+Follow token failures: none
+
+SQL004 [sql] - PASS
+Initial token failures: none
+Follow token failures: none
+
+SQL005 [sql] - PASS
+Initial token failures: none
+Follow token failures: none
+
+SQL006 [sql] - PASS
+Initial token failures: none
+Follow token failures: none
+
+SQL007 [sql] - PASS
+Initial token failures: none
+Follow token failures: none
+
+SQL008 [sql] - PASS
+Initial token failures: none
+Follow token failures: none
+
+SQL009 [sql] - PASS
+Initial token failures: none
+Follow token failures: none
+
+SQL010 [sql] - PASS
+Initial token failures: none
+Follow token failures: none
+
+SEM001 [semantic] - FAIL
+Initial token failures: missing:water crisi
+Follow token failures: none

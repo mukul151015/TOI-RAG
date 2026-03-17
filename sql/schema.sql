@@ -6,6 +6,42 @@ create table if not exists organizations (
   created_at timestamptz not null default now()
 );
 
+create table if not exists app_users (
+  id bigserial primary key,
+  email text not null unique,
+  password_hash text not null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists user_sessions (
+  id bigserial primary key,
+  user_id bigint not null references app_users(id) on delete cascade,
+  session_token text not null unique,
+  session_context jsonb not null default '{}'::jsonb,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now()
+);
+
+alter table user_sessions
+  add column if not exists session_context jsonb not null default '{}'::jsonb;
+
+create table if not exists chat_interactions (
+  id bigserial primary key,
+  user_id bigint not null references app_users(id) on delete cascade,
+  session_id bigint not null references user_sessions(id) on delete cascade,
+  user_question text not null,
+  system_answer text not null,
+  issue_date date,
+  mode text,
+  session_filters jsonb,
+  citations jsonb,
+  trace_data jsonb,
+  created_at timestamptz not null default now()
+);
+
+alter table chat_interactions
+  add column if not exists trace_data jsonb;
+
 create table if not exists issues (
   id bigserial primary key,
   organization_id text not null references organizations(id),
@@ -165,6 +201,10 @@ create table if not exists article_chunks (
 );
 
 create index if not exists idx_issues_date on issues(issue_date);
+create index if not exists idx_user_sessions_token on user_sessions(session_token);
+create index if not exists idx_user_sessions_expires_at on user_sessions(expires_at);
+create index if not exists idx_chat_interactions_user on chat_interactions(user_id, created_at desc);
+create index if not exists idx_chat_interactions_session on chat_interactions(session_id, created_at desc);
 create index if not exists idx_articles_pub_issue on articles(publication_issue_id);
 create index if not exists idx_articles_section on articles(section_id);
 create index if not exists idx_article_bodies_tsv on article_bodies using gin (body_tsv);
@@ -192,15 +232,25 @@ returns table (
 )
 language sql
 as $$
+  with candidates as (
+    select
+      c.id,
+      c.article_id,
+      c.chunk_text,
+      c.embedding <=> query_embedding as distance
+    from article_chunks c
+    order by c.embedding <=> query_embedding
+    limit greatest(match_count * 40, 400)
+  )
   select
     c.id as chunk_id,
     a.id as article_id,
     c.chunk_text,
-    1 - (c.embedding <=> query_embedding) as similarity,
+    1 - c.distance as similarity,
     a.headline,
     s.normalized_section as section,
     p.publication_name
-  from article_chunks c
+  from candidates c
   join articles a on a.id = c.article_id
   join publication_issues pi on pi.id = a.publication_issue_id
   join publications p on p.id = pi.publication_id
@@ -209,6 +259,6 @@ as $$
   where (issue_dt is null or i.issue_date = issue_dt)
     and (publication_filter is null or p.publication_name ilike '%' || publication_filter || '%')
     and (section_filter is null or s.normalized_section ilike '%' || section_filter || '%')
-  order by c.embedding <=> query_embedding
+  order by c.distance
   limit match_count;
 $$;

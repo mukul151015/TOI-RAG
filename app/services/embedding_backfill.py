@@ -130,6 +130,7 @@ def _process_embedding_group(articles: list[dict]) -> dict[str, int]:
                     f"{headline}\n{cleaned_text}",
                     settings.chunk_size,
                     settings.chunk_overlap,
+                    settings.chunk_overlap_sentences,
                 )
                 if not chunks:
                     _mark_article_status(

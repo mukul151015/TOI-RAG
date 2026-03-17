@@ -1,0 +1,31 @@
+id	category	prompt	follow_up	initial_must_contain	initial_must_not_contain	follow_must_contain	follow_must_not_contain
+SQL001	sql	Show me all articles published in the Delhi edition on March 11	what exact editions are available then?	don't see a single exact edition named delhi;toidelhibs	chandigarh	agra;bareilly;dehradun;toi_noida	chandigarh
+SQL002	sql	Which sections had the most articles on March 11?	Which one was second?	nation had the most;full section ranking		city;1314	
+SQL003	sql	List all articles from the Sports section	Show me 5 articles	sports;150	iran war	here are 5 worth looking at;sports	iran war
+SQL004	sql	Count the numbers of all articles published in the Mumbai edition on March 11	Which edition did you use?	there were;mumbai		mumbaicity	
+SQL005	sql	How many articles were there on the Mumbai front page?	Show me 3 articles from that	frontpage;mumbaicity		3 worth looking at;frontpage	sports
+SQL006	sql	Show me all World section articles from the Mumbai edition	Show me 3 articles	world;mumbai		3 worth looking at;world	sports
+SQL007	sql	How many Business articles were published on March 11?	Show me 2 articles from those	there were;business		2 worth looking at;business	
+SQL008	sql	Show me all articles from the Edit section on March 11	Show me 5 articles	edit		5 worth looking at;edit	
+SQL009	sql	How many Sports articles were published on March 11?	Show me 2 articles from those	there were;sports		2 worth looking at;sports	
+SQL010	sql	Which section had the least articles on March 11?	Show me the full ranking	oped;fewest		full section ranking;oped	
+SEM001	semantic	Find articles related to the Iran war	show any one of article	water crisi;iran	sports	iran;war	gas allocation
+SEM002	semantic	Which stories covered India's World Cup win?	show any one of article	world cup;131 crore;suryakumar	iran	BCCI announces 131 cr reward for World Champions	iran
+SEM003	semantic	What was written about the budget impact on the middle class?	show any one of article	inflation;middle class	world cup	inflation;business	world cup
+SEM004	semantic	can you tell me news about Rahul Gandhi	show any one of article	rahul gandhi	sports	rahul	 sports
+SEM005	semantic	can you tell me news abput rahul gandhi	show any one of article	rahul gandhi	sports	rahul	 sports
+SEM006	semantic	how many articles around modi	How many times Modi name appeared and in what context	modi;relevant articles	5607	modi;context	5607
+SEM007	semantic	Find stories about China growth ambitions	show any one of article	china;beijing	world cup	world’s newest beijing problem	world cup
+SEM008	semantic	Find stories about journalists facing restrictions in the Middle East war	show any one of article	journalists;restrictions;middle east	sports	journalists covering mideast war face detention, more curbs	sports
+SEM009	semantic	Find stories about LPG, PNG and CNG supply priority	show any one of article	lpg;png;cng	iran	lpg;cng;priority	iran
+SEM010	semantic	Find stories about animation and Modi	show any one of article	animation;modi	iran	Modi: India actively promoting animation	iran
+HYB001	hybrid	Find articles about the Iran conflict published in the Mumbai edition	show any one of article	mumbai edition;iran conflict	delhi	iran;war;water	delhi
+HYB002	hybrid	Which Sports section articles covered India winning the World Cup?	show any one of article	world cup;131 crore;surya	iran	bcci;131 cr;world cup	iran
+HYB003	hybrid	Show me opinion pieces from the Editorial section that discuss geopolitical tensions	can you give me article regarding world's newest brijing proble,m what you have shared above as	iran;china;geopolitical	sports	world’s newest beijing problem	sports
+HYB004	hybrid	Find business stories about inflation in the Mumbai edition	show any one of article	business;inflation;mumbai	sports	economists;inflation	sports
+HYB005	hybrid	Find World section stories about Iran in the Mumbai edition	show any one of article	world;iran;mumbai	sports	iran;water crises;world	sports
+HYB006	hybrid	Show me editorial pieces about China in the Edit section	show any one of article	china;editorial	world cup	world’s newest beijing problem	world cup
+HYB007	hybrid	Find nation stories about Rahul Gandhi in the Delhi edition	what exact editions are available then?	delhi;toidelhibs		agra;bareilly;dehradun;toi_noida	chandigarh
+HYB008	hybrid	Find Business section articles about the budget impact on the middle class	show any one of article	budget;middle class;inflation	world cup	economists;inflation	world cup
+HYB009	hybrid	Find World section stories about journalists facing restrictions published in the Mumbai edition	show any one of article	journalists;world;mumbai	sports	journalists;restrictions;mideast war	sports
+HYB010	hybrid	which sport section covered india victory in t-20 world cup	show any one of article	world cup;131 cr;surya	iran	bcci;131 cr;world cup	iran

@@ -8,11 +8,23 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_host: str = "0.0.0.0"
     app_port: int = 8000
+    auth_bypass_in_dev: bool = True
 
     supabase_db_dsn: str
+    supabase_db_direct_dsn: str | None = None
+    db_auto_ensure_schema: bool = False
+    db_auto_ensure_runtime_schema: bool = True
+    db_connect_timeout_seconds: int = 5
+    db_pool_timeout_seconds: float = 8.0
+    db_pool_min_size: int = 1
+    db_pool_max_size: int = 4
+    db_retry_attempts: int = 3
+    db_retry_base_delay_seconds: float = 1.0
     openai_api_key: str
     openai_embedding_model: str = "text-embedding-3-small"
     openai_chat_model: str = "gpt-4.1-mini"
+    openai_chat_model_strong: str = "gpt-4.1"
+    strong_model_intent_triggers: list = ["fact_lookup", "topic_count"]
     openai_verify_ssl: bool = True
     openai_ca_bundle_path: str | None = None
     openai_max_retries: int = 4
@@ -24,6 +36,14 @@ class Settings(BaseSettings):
     embedding_batch_size: int = 32
     chunk_size: int = 1800
     chunk_overlap: int = 250
+    chunk_overlap_sentences: int = 2
+
+    # Feature flags
+    hyde_enabled: bool = True
+    llm_query_analysis_enabled: bool = True
+    reranking_enabled: bool = False  # requires sentence_transformers package; set True to enable
+    reranker_top_k: int = 30
+    low_confidence_threshold: float = 0.40
 
     default_org_id: str = "toi"
     default_feed_url: str = (

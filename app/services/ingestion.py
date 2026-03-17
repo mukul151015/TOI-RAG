@@ -348,6 +348,7 @@ async def ingest_feed(
                             parsed_doc.embedding_text,
                             settings.chunk_size,
                             settings.chunk_overlap,
+                            settings.chunk_overlap_sentences,
                         )
                         if not chunks:
                             _mark_article_status(
