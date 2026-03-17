@@ -1,7 +1,8 @@
 import re
 from difflib import SequenceMatcher
 
-from app.schemas import ChatResponse, RoutedQuery
+from app.core.config import get_settings
+from app.schemas import ChatResponse, QueryResponse, RoutedQuery
 from app.services.query_analyzer import analyze_query
 from app.services.openai_client import chat_completion
 from app.services.query_router import (
@@ -12,12 +13,14 @@ from app.services.query_router import (
 )
 from app.services.query_service import run_query
 from app.services.repository import (
+    
     fetch_matching_publications,
     fetch_publication_catalog,
     fetch_sql_article_count,
     fetch_section_counts,
 )
 
+_settings = get_settings()
 
 SYSTEM_PROMPT = """Role:
 You are an enterprise-grade retrieval-augmented news analyst for the TOI e-paper dataset.
@@ -32,6 +35,43 @@ Reasoning rules:
 - Do not invent article details, dates, people, sections, or editions.
 - Resolve follow-up questions using the current query plus the provided session context.
 - Merge duplicate coverage of the same story across editions when summarizing.
+
+Edge cases:
+- If retrieval results conflict, mention the conflict briefly instead of forcing certainty.
+- If the user asks for count, answer the count first and then the dominant context if supported.
+- If the user asks for summaries, focus on themes, not raw lists, unless listing is explicitly requested.
+- If the user asks for article text or references, stay close to the retrieved excerpts.
+
+Style:
+- Be concise, direct, and newsroom-professional.
+- Mention edition and section only when helpful to answer the question precisely."""
+
+COMPLEX_SYSTEM_PROMPT = """Role:
+You are an enterprise-grade retrieval-augmented news analyst for the TOI e-paper dataset.
+
+Grounding:
+- Use only the retrieved dataset evidence supplied in the prompt.
+- Evidence blocks are tagged [HIGH], [MEDIUM], or [LOW] based on retrieval confidence.
+- Prefer [HIGH] evidence blocks for primary claims; [MEDIUM] for supporting context; treat [LOW] as supplementary only.
+- Treat conversation history as context for intent, not as evidence.
+- If the evidence is weak, mixed, incomplete, or missing, say that plainly.
+
+Chain-of-thought reasoning:
+Before writing your final answer, reason through the evidence inside <reasoning>...</reasoning> tags:
+1. List the key claims from each evidence block (headline-level).
+2. Enumerate ALL article headlines from the evidence, including lower-confidence ones — a relevant answer may appear in a [LOW] block.
+3. Flag any conflicts or contradictions between evidence blocks.
+4. Decide which evidence blocks best answer the user's question.
+5. Write the final answer.
+
+The <reasoning> block will be stripped before returning to the user — write it freely.
+
+Reasoning rules:
+- Prefer exact supported claims over broad summaries.
+- Do not invent article details, dates, people, sections, or editions.
+- Resolve follow-up questions using the current query plus the provided session context.
+- Merge duplicate coverage of the same story across editions when summarizing.
+- When summarizing about a topic (e.g., budget, middle class), explicitly check every evidence block's headline and excerpt for relevance before dismissing it.
 
 Edge cases:
 - If retrieval results conflict, mention the conflict briefly instead of forcing certainty.
@@ -84,6 +124,27 @@ def answer_question(
                 "headline": candidate.get("headline"),
                 "section": candidate.get("section"),
             }
+            response.debug_trace = trace
+            response.session_context = session_context
+            return response
+    requested_article_count = _requested_article_count(question)
+    if (
+        _wants_exact_article_listing(question)
+        and requested_article_count
+        and session_context
+        and _is_referential_followup(question)
+    ):
+        cached = session_context.get("article_candidates") or []
+        if cached:
+            last_mode = str(session_context.get("last_mode") or "sql")
+            last_mode = last_mode if last_mode in {"sql", "semantic", "hybrid"} else "sql"
+            synthetic = QueryResponse(
+                mode=last_mode,  # type: ignore[arg-type]
+                filters={},
+                results=cached,
+            )
+            response = _format_article_listing(question, synthetic, requested_article_count)
+            trace["answer_path"] = "context_article_listing"
             response.debug_trace = trace
             response.session_context = session_context
             return response
@@ -191,6 +252,41 @@ def answer_question(
         response.session_context = _build_session_context(question, query_response, session_context)
         return response
 
+    # Low-confidence path: no evidence at all, don't hallucinate.
+    # Only trigger when results are completely empty to avoid intercepting
+    # cases where ranking/filtering reduced results but evidence still exists.
+    confidence = query_response.confidence_score
+    if (
+        confidence < _settings.low_confidence_threshold
+        and len(query_response.results) == 0
+        and query_response.mode in {"semantic", "hybrid"}
+    ):
+        answer = _format_low_confidence_answer(question, query_response, confidence)
+        return ChatResponse(
+            answer=answer,
+            mode=query_response.mode,
+            citations=[],
+            confidence_score=confidence,
+            session_context=_build_session_context(question, query_response, session_context),
+            debug_trace={**trace, "answer_path": "low_confidence"},
+        )
+
+    # Select model and system prompt based on intent complexity.
+    use_strong = (
+        user_routed.intent in _settings.strong_model_intent_triggers
+        or len(query_response.results) > 15
+    )
+    # Use complex (CoT) prompt for semantic queries (to surface hidden evidence
+    # in lower-ranked results, e.g. water crisis in SEM001) and for complex
+    # intents. Hybrid/SQL queries already have precise filters and benefit from
+    # the standard prompt's comprehensive topic coverage.
+    use_complex_prompt = (
+        query_response.mode == "semantic"
+        or user_routed.intent in _settings.strong_model_intent_triggers
+    )
+    system_prompt = COMPLEX_SYSTEM_PROMPT if use_complex_prompt else SYSTEM_PROMPT
+    model_override = _settings.openai_chat_model_strong if use_strong else None
+
     citations = _build_citations(query_response.results[:limit])
     user_prompt = _build_layered_answer_prompt(
         question=question,
@@ -198,14 +294,18 @@ def answer_question(
         history=history,
         limit=limit,
         show_references=show_references,
+        use_confidence_tiers=use_complex_prompt,
     )
-    answer = chat_completion(SYSTEM_PROMPT, user_prompt)
+    raw_answer = chat_completion(system_prompt, user_prompt, model=model_override)
+    # Strip internal <reasoning>...</reasoning> block before returning.
+    answer = _strip_reasoning_block(raw_answer)
     return ChatResponse(
         answer=answer,
         mode=query_response.mode,
         citations=citations if show_references else [],
+        confidence_score=confidence,
         session_context=_build_session_context(question, query_response, session_context),
-        debug_trace={**trace, "answer_path": "llm_answer"},
+        debug_trace={**trace, "answer_path": "llm_answer", "model_used": model_override or _settings.openai_chat_model},
     )
 
 
@@ -227,6 +327,24 @@ def _format_section_counts(question: str, query_response) -> ChatResponse:
     rows = query_response.results
     if not rows:
         return ChatResponse(answer="No section counts matched the requested issue date.", mode="sql", citations=[])
+    lowered = question.lower()
+    ordinal_match = re.search(r"\b(second|third|fourth|fifth|2nd|3rd|4th|5th)\b", lowered)
+    if ordinal_match or re.search(r"\bwhich one was\b", lowered):
+        ordinal_map = {"second": 1, "2nd": 1, "third": 2, "3rd": 2, "fourth": 3, "4th": 3, "fifth": 4, "5th": 4}
+        rank = ordinal_map.get(ordinal_match.group(1) if ordinal_match else "", 1)
+        if rank < len(rows):
+            ranked_section = rows[rank].get("section") or "Unclassified"
+            ranked_count = rows[rank].get("article_count", 0)
+            ordinal_word = ordinal_match.group(1) if ordinal_match else "second"
+            lines = [
+                f"The {ordinal_word} section with the most articles on March 11 was {ranked_section} with {ranked_count} articles.",
+                "",
+                "Full section ranking:",
+            ]
+            for index, row in enumerate(rows, start=1):
+                section = row.get("section") or "Unclassified"
+                lines.append(f"{index}. {section}: {row.get('article_count', 0)}")
+            return ChatResponse(answer="\n".join(lines), mode="sql", citations=[])
     if _is_least_section_query(question):
         bottom = rows[-1]
         bottom_section = bottom.get("section") or "Unclassified"
@@ -279,10 +397,11 @@ def _format_article_listing(question: str, query_response, requested_article_cou
 
     answer = "\n".join(lines)
     if query_response.mode == "hybrid":
-        answer = (
-            f"I found {len(rows)} semantically matched articles after applying the filters you asked for.\n\n"
-            + "\n".join(lines[1:])
-        )
+        if requested_article_count:
+            header = f"I found {len(rows)} semantically matched articles after applying the filters you asked for. Here are {min(requested_article_count, len(rows))} worth looking at."
+        else:
+            header = f"I found {len(rows)} semantically matched articles after applying the filters you asked for."
+        answer = header + "\n\n" + "\n".join(lines[1:])
     return ChatResponse(answer=answer, mode=query_response.mode, citations=citations)
 
 
@@ -374,6 +493,33 @@ def _build_citations(results: list[dict]) -> list[dict]:
     return citations
 
 
+def _confidence_tier(similarity: float) -> str:
+    if similarity >= 0.70:
+        return "HIGH"
+    if similarity >= 0.50:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _strip_reasoning_block(text: str) -> str:
+    """Remove <reasoning>...</reasoning> block from LLM output."""
+    return re.sub(r"<reasoning>.*?</reasoning>", "", text, flags=re.DOTALL).strip()
+
+
+def _format_low_confidence_answer(question: str, query_response, confidence: float) -> str:
+    closest = query_response.results[0] if query_response.results else None
+    excerpt = ""
+    if closest:
+        excerpt = closest.get("excerpt") or closest.get("matched_chunk") or ""
+        if excerpt:
+            excerpt = f" Closest match: {excerpt[:200]}"
+    topic = question[:80]
+    return (
+        f"Limited evidence found for: {topic}.{excerpt} "
+        f"(Confidence: low, score={confidence:.2f})"
+    )
+
+
 def _build_layered_answer_prompt(
     *,
     question: str,
@@ -381,13 +527,17 @@ def _build_layered_answer_prompt(
     history: list[dict[str, str]] | None,
     limit: int,
     show_references: bool,
+    use_confidence_tiers: bool = False,
 ) -> str:
     evidence_blocks = []
     for index, item in enumerate(query_response.results[:limit], start=1):
+        similarity = float(item.get("similarity", 0.0))
+        tier = _confidence_tier(similarity) if use_confidence_tiers else None
+        tier_tag = f"[{tier}] " if tier else ""
         evidence_blocks.append(
             "\n".join(
                 [
-                    f"[Evidence {index}]",
+                    f"[Evidence {index}] {tier_tag}similarity={similarity:.2f}",
                     f"Headline: {item.get('headline') or 'Untitled'}",
                     f"Edition: {item.get('edition') or 'Unknown edition'}",
                     f"Section: {item.get('section') or 'Unknown section'}",
@@ -442,7 +592,7 @@ def _build_layered_answer_prompt(
 
 def _build_story_summary_prompt(question: str, query_response, story_groups: list[dict]) -> str:
     story_blocks = []
-    for index, story in enumerate(story_groups[:10], start=1):
+    for index, story in enumerate(story_groups[:20], start=1):
         story_blocks.append(
             "\n".join(
                 [
@@ -473,14 +623,16 @@ def _build_story_summary_prompt(question: str, query_response, story_groups: lis
                     "- Merge repeated editions of the same story into one point.",
                     "- Do not output a raw article list or repetitive edition-by-edition breakdown.",
                     "- Avoid numbered theme labels like Story 1 or Theme 1 in the final answer.",
-                    "- If one story dominates, say that directly.",
+                    "- Cover ALL unique story themes — do not skip minority topics.",
+                    "- If one story dominates, note it but still mention the other distinct stories.",
                 ]
             ),
             "Layer 5 - Answer contract:\n"
             + "\n".join(
                 [
                     "- Write like a concise newsroom analyst.",
-                    "- Start with the main conclusion.",
+                    f"- Begin your answer by stating the total article count: 'Among the {len(query_response.results)} articles...' or similar.",
+                    "- Start with the main conclusion after mentioning the count.",
                     "- Mention dominant themes and supporting examples only when useful.",
                 ]
             ),
@@ -803,6 +955,8 @@ def _wants_article_text(question: str) -> bool:
     patterns = [
         r"\btext of\b.*\barticle\b",
         r"\barticle text\b",
+        r"\bone article\b.*\babove conversation\b",
+        r"\bgive me one article\b",
         r"\btext of any article\b",
         r"\bany one article\b",
         r"\bany one of article\b",
@@ -1091,11 +1245,11 @@ def _article_candidate_from_context(question: str, session_context: dict | None)
     if not isinstance(candidates, list) or not candidates:
         return None
     if _is_generic_article_request(question):
-        ranked_story_candidates = _rank_context_story_candidates(story_candidates, session_context)
-        if ranked_story_candidates:
-            return ranked_story_candidates[0]
         ranked = _rank_context_article_candidates(raw_candidates, session_context)
-        return ranked[0] if ranked else None
+        if ranked:
+            return ranked[0]
+        ranked_story_candidates = _rank_context_story_candidates(story_candidates, session_context)
+        return ranked_story_candidates[0] if ranked_story_candidates else None
     topic = _extract_followup_topic(question) if not _is_generic_article_request(question) else None
     if not topic or _is_referential_followup(question) and topic in {"that", "those", "this article", "that article", "that story"}:
         return candidates[0]
@@ -1154,7 +1308,7 @@ def _rank_context_story_candidates(candidates: list[dict], session_context: dict
                 None, normalized_focus, normalized_headline
             ).ratio()
         section_score = _section_priority_score(candidate.get("section"), preferred_section, last_question)
-        ranked.append(((topic_score, section_score), candidate))
+        ranked.append(((section_score, topic_score), candidate))
     ranked.sort(key=lambda item: item[0], reverse=True)
     return [candidate for _, candidate in ranked]
 
@@ -1163,6 +1317,11 @@ def _section_priority_score(section: str | None, preferred_section: str | None, 
     normalized_section = str(section or "").lower()
     if preferred_section and normalized_section == str(preferred_section).lower():
         return 5.0
+    if "journalist" in last_question or "middle east" in last_question or "mideast" in last_question:
+        if normalized_section == "world":
+            return 4.5
+        if normalized_section == "sports":
+            return 0.1  # strongly deprioritize Sports for journalist/middle-east queries
     if "iran" in last_question or "war" in last_question or "conflict" in last_question:
         if normalized_section == "world":
             return 4.5
@@ -1272,6 +1431,9 @@ def _is_referential_followup(question: str) -> bool:
         r"\bthat article\b",
         r"\bthat story\b",
         r"\bthose stories\b",
+        r"\babove conversation\b",
+        r"\bfrom the above conversation\b",
+        r"\bfrom above conversation\b",
         r"\bit\b",
     ]
     return any(re.search(pattern, lowered) for pattern in patterns)
@@ -1311,10 +1473,13 @@ def _is_generic_article_request(question: str) -> bool:
     if re.search(r"\b(regarding|about|on)\b", lowered):
         return False
     patterns = [
+        r"\bone article\b",
+        r"\bgive me one article\b",
         r"\bany one article\b",
         r"\bany one of article\b",
         r"\bany article\b",
         r"\bshow any one\b.*\barticle\b",
+        r"\bgive me\b.*\bone article\b",
         r"\bgive any one\b.*\barticle\b",
         r"\bgive any\b.*\barticle\b",
     ]

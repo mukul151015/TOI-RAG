@@ -30,6 +30,8 @@ def is_section_count_query(query: str) -> bool:
         "which sections had the most articles" in lowered
         or "which section had the least articles" in lowered
         or "show me the full ranking" in lowered
+        or bool(re.search(r"\bwhich\b.+\bwas\b.+\b(second|third|fourth|fifth|2nd|3rd|4th|5th)\b", lowered))
+        or bool(re.search(r"\bwhich one was\b", lowered))
     )
 
 

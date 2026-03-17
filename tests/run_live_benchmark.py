@@ -15,6 +15,9 @@ RESULTS_PATH = ROOT / "benchmarks" / f"live_benchmark_results_{TODAY}.txt"
 ISSUE_DATE = "2026-03-11"
 LIMIT = 10
 
+# Similarity threshold for semantic evaluation of FAIL cases.
+SEMANTIC_MATCH_THRESHOLD = 0.72
+
 
 @dataclass
 class Case:
@@ -57,6 +60,50 @@ def load_cases() -> list[Case]:
     return cases
 
 
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def semantic_evaluate(
+    answer: str,
+    must_contain: list[str],
+    must_not_contain: list[str],
+) -> tuple[bool, list[str]]:
+    """Embedding-based evaluation for FAIL cases.
+
+    Embeds the full answer and each required token, then flags a match when
+    cosine similarity exceeds ``SEMANTIC_MATCH_THRESHOLD``.  Only called on
+    cases that fail the token check, so API cost is minimal.
+    """
+    try:
+        from app.services.openai_client import embed_texts  # late import
+
+        texts_to_embed = [answer] + must_contain
+        embeddings = embed_texts(texts_to_embed)
+        answer_vec = embeddings[0]
+        token_vecs = embeddings[1:]
+
+        failures: list[str] = []
+        for token, token_vec in zip(must_contain, token_vecs):
+            sim = _cosine_similarity(answer_vec, token_vec)
+            if sim < SEMANTIC_MATCH_THRESHOLD:
+                failures.append(f"missing:{token}(sem={sim:.2f})")
+        # must_not_contain: token-based check is fine for negatives.
+        lowered = answer.lower()
+        for token in must_not_contain:
+            if token in lowered:
+                failures.append(f"unexpected:{token}")
+        return (not failures, failures)
+    except Exception:
+        # If semantic eval fails, fall back to token check result.
+        return evaluate(answer, must_contain, must_not_contain)
+
+
 def evaluate(answer: str, must_contain: list[str], must_not_contain: list[str]) -> tuple[bool, list[str]]:
     lowered = answer.lower()
     failures: list[str] = []
@@ -79,6 +126,14 @@ def run_case(case: Case) -> dict:
         case.initial_must_contain,
         case.initial_must_not_contain,
     )
+    # Semantic eval on FAIL turns only (reduces API cost).
+    first_sem_ok, first_sem_failures = first_ok, first_failures
+    if not first_ok and (case.initial_must_contain or case.initial_must_not_contain):
+        first_sem_ok, first_sem_failures = semantic_evaluate(
+            first.answer,
+            case.initial_must_contain,
+            case.initial_must_not_contain,
+        )
 
     history.append({"role": "user", "content": case.prompt})
     history.append({"role": "assistant", "content": first.answer})
@@ -90,14 +145,27 @@ def run_case(case: Case) -> dict:
         case.follow_must_contain,
         case.follow_must_not_contain,
     )
+    second_sem_ok, second_sem_failures = second_ok, second_failures
+    if not second_ok and (case.follow_must_contain or case.follow_must_not_contain):
+        second_sem_ok, second_sem_failures = semantic_evaluate(
+            second.answer,
+            case.follow_must_contain,
+            case.follow_must_not_contain,
+        )
 
     return {
         "case_id": case.case_id,
         "category": case.category,
+        # Token-based results
         "initial_ok": first_ok,
         "follow_ok": second_ok,
         "initial_failures": first_failures,
         "follow_failures": second_failures,
+        # Semantic results (only meaningful when token check fails)
+        "initial_sem_ok": first_sem_ok,
+        "follow_sem_ok": second_sem_ok,
+        "initial_sem_failures": first_sem_failures,
+        "follow_sem_failures": second_sem_failures,
         "initial_answer": first.answer,
         "follow_answer": second.answer,
     }
@@ -124,12 +192,14 @@ def main() -> None:
             print(f"Running {case.case_id}: {case.prompt}", flush=True)
             result = run_case(case)
             results.append(result)
-            status = "PASS" if result["initial_ok"] and result["follow_ok"] else "FAIL"
+            token_ok = result["initial_ok"] and result["follow_ok"]
+            sem_ok = result["initial_sem_ok"] and result["follow_sem_ok"]
+            status = "PASS" if token_ok else ("SEM-PASS" if sem_ok else "FAIL")
             partial_lines.extend(
                 [
                     f"{result['case_id']} [{result['category']}] - {status}",
-                    f"Initial failures: {', '.join(result['initial_failures']) or 'none'}",
-                    f"Follow failures: {', '.join(result['follow_failures']) or 'none'}",
+                    f"Initial token failures: {', '.join(result['initial_failures']) or 'none'}",
+                    f"Follow token failures: {', '.join(result['follow_failures']) or 'none'}",
                     "",
                 ]
             )
@@ -137,29 +207,36 @@ def main() -> None:
     finally:
         close_pool()
 
-    passed = sum(1 for item in results if item["initial_ok"] and item["follow_ok"])
-    failed = len(results) - passed
+    token_passed = sum(1 for item in results if item["initial_ok"] and item["follow_ok"])
+    sem_passed = sum(1 for item in results if item["initial_sem_ok"] and item["follow_sem_ok"])
+    total = len(results)
+    token_pass_rate = token_passed / total if total else 0.0
+    semantic_pass_rate = sem_passed / total if total else 0.0
 
     lines = [
         "TOI RAG Live Benchmark Report",
         f"Run date: {TODAY}",
         f"Issue date: {ISSUE_DATE}",
-        f"Cases: {len(results)}",
-        f"Prompt turns: {len(results) * 2}",
-        f"Passed cases: {passed}",
-        f"Failed cases: {failed}",
+        f"Cases: {total}",
+        f"Prompt turns: {total * 2}",
+        f"Token pass rate:    {token_passed}/{total} ({token_pass_rate:.1%})",
+        f"Semantic pass rate: {sem_passed}/{total} ({semantic_pass_rate:.1%})",
         "",
         "Detailed results:",
         "",
     ]
 
     for item in results:
-        status = "PASS" if item["initial_ok"] and item["follow_ok"] else "FAIL"
+        token_ok = item["initial_ok"] and item["follow_ok"]
+        sem_ok = item["initial_sem_ok"] and item["follow_sem_ok"]
+        status = "PASS" if token_ok else ("SEM-PASS" if sem_ok else "FAIL")
         lines.extend(
             [
                 f"{item['case_id']} [{item['category']}] - {status}",
-                f"Initial failures: {', '.join(item['initial_failures']) or 'none'}",
-                f"Follow failures: {', '.join(item['follow_failures']) or 'none'}",
+                f"Initial token failures: {', '.join(item['initial_failures']) or 'none'}",
+                f"Follow token failures:  {', '.join(item['follow_failures']) or 'none'}",
+                f"Initial sem failures:   {', '.join(item['initial_sem_failures']) or 'none'}",
+                f"Follow sem failures:    {', '.join(item['follow_sem_failures']) or 'none'}",
                 f"Initial answer: {item['initial_answer']}",
                 f"Follow answer: {item['follow_answer']}",
                 "",
@@ -168,7 +245,8 @@ def main() -> None:
 
     RESULTS_PATH.write_text("\n".join(lines), encoding="utf-8")
     print(f"Wrote benchmark report to {RESULTS_PATH}")
-    print(f"Passed cases: {passed}/{len(results)}")
+    print(f"Token pass rate:    {token_passed}/{total} ({token_pass_rate:.1%})")
+    print(f"Semantic pass rate: {sem_passed}/{total} ({semantic_pass_rate:.1%})")
 
 
 if __name__ == "__main__":

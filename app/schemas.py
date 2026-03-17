@@ -68,12 +68,14 @@ class QueryResponse(BaseModel):
     mode: Literal["sql", "semantic", "hybrid"]
     filters: dict[str, Any]
     results: list[dict[str, Any]]
+    confidence_score: float = 0.0
 
 
 class ChatResponse(BaseModel):
     answer: str
     mode: Literal["sql", "semantic", "hybrid"]
     citations: list[dict[str, Any]]
+    confidence_score: float = 0.0
     session_context: dict[str, Any] | None = None
     debug_trace: dict[str, Any] | None = None
 

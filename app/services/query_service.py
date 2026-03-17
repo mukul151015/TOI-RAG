@@ -1,11 +1,13 @@
 from collections import OrderedDict
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from app.core.config import get_settings
 from app.schemas import QueryResponse
 from app.services.query_analyzer import analyze_query
 from app.services.query_analyzer import canonical_person_name, expand_person_alias_terms
-from app.services.openai_client import embed_texts
+from app.services.openai_client import embed_texts, chat_completion
 from app.services.query_router import (
     expand_semantic_queries,
     is_section_count_query,
@@ -26,6 +28,8 @@ from app.services.repository import (
     keyword_search,
     semantic_search,
 )
+
+_settings = get_settings()
 
 
 logger = logging.getLogger(__name__)
@@ -160,12 +164,33 @@ def run_query(
             results=rows,
         )
 
-    semantic_queries = expand_semantic_queries(routed.semantic_query or normalize_user_query(query))
-    embeddings = embed_texts(semantic_queries)
+    base_semantic = routed.semantic_query or normalize_user_query(query)
+    semantic_queries = expand_semantic_queries(base_semantic)
+
+    # Incorporate LLM-generated paraphrases (from analyze_query's entity enrichment).
+    llm_paraphrases = analysis.entities.get("llm_paraphrases", [])
+    for paraphrase in llm_paraphrases:
+        if paraphrase and paraphrase not in semantic_queries:
+            semantic_queries.append(paraphrase)
+
+    per_query_limit = min(max(window, limit) * 3, 5000)
+
+    # -----------------------------------------------------------------
+    # Concurrent HyDE generation + embedding
+    # -----------------------------------------------------------------
+    hyde_queries: list[str] = []
+    if _settings.hyde_enabled:
+        hyde_queries = _generate_hyde_queries(query)
+
+    all_queries_to_embed = semantic_queries + hyde_queries
+    embeddings = embed_texts(all_queries_to_embed)
+    # Semantic queries use first N embeddings; HyDE embeddings follow.
+    semantic_embeddings = embeddings[: len(semantic_queries)]
+    hyde_embeddings = embeddings[len(semantic_queries):]
+
     vector_rows = []
     vector_search_failed = False
-    per_query_limit = min(max(window, limit) * 3, 5000)
-    for embedding in embeddings:
+    for embedding in semantic_embeddings + hyde_embeddings:
         try:
             vector_rows.extend(
                 semantic_search(
@@ -205,6 +230,7 @@ def run_query(
     except Exception as exc:
         logger.warning("Article hydration failed after retrieval: %s", exc)
         article_rows = {}
+
     ranked_rows = _rank_rows(
         vector_rows,
         keyword_rows,
@@ -212,6 +238,28 @@ def run_query(
         semantic_queries,
         analysis.entities,
     )
+
+    # -----------------------------------------------------------------
+    # Optional cross-encoder reranking
+    # -----------------------------------------------------------------
+    if _settings.reranking_enabled and ranked_rows:
+        try:
+            from app.services.reranker import rerank  # noqa: PLC0415
+            candidates = ranked_rows[: _settings.reranker_top_k]
+            candidate_texts = [
+                article_rows.get(r["article_id"], {}).get("excerpt") or r.get("chunk_text", "")
+                for r in candidates
+            ]
+            reranked_indices = rerank(query, candidate_texts)
+            ranked_rows = [candidates[i] for i in reranked_indices] + ranked_rows[_settings.reranker_top_k:]
+        except Exception as exc:
+            logger.warning("Reranking failed, using original ranking: %s", exc)
+
+    # -----------------------------------------------------------------
+    # Confidence score: mean similarity of top-5 results
+    # -----------------------------------------------------------------
+    confidence_score = _compute_confidence(ranked_rows)
+
     results = []
     for row in ranked_rows[:window]:
         article = article_rows.get(row["article_id"])
@@ -231,7 +279,33 @@ def run_query(
             **({"keyword_search_failed": True} if keyword_search_failed else {}),
         },
         results=results,
+        confidence_score=confidence_score,
     )
+
+
+def _generate_hyde_queries(query: str) -> list[str]:
+    """Generate a hypothetical 2-sentence news excerpt that answers the query."""
+    try:
+        hyde_system = (
+            "You are a Times of India journalist. Given a user query, write a plausible "
+            "2-sentence news excerpt that would answer it. Be factual and concise. "
+            "Output only the excerpt, no preamble."
+        )
+        hyde_doc = chat_completion(hyde_system, query, model=_settings.openai_chat_model, timeout=15.0)
+        if hyde_doc and len(hyde_doc) > 20:
+            return [hyde_doc]
+    except Exception as exc:
+        logger.warning("HyDE generation failed: %s", exc)
+    return []
+
+
+def _compute_confidence(ranked_rows: list[dict]) -> float:
+    """Mean similarity of top-5 ranked results, or 0.0 if none."""
+    top = ranked_rows[:5]
+    if not top:
+        return 0.0
+    scores = [float(r.get("similarity", 0.0)) for r in top]
+    return round(sum(scores) / len(scores), 4)
 
 
 def _exact_entity_terms_for_topic_count(entities: dict[str, list[str]], intent: str) -> list[str]:

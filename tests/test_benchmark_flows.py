@@ -1058,6 +1058,211 @@ class ChatBenchmarkTests(unittest.TestCase):
         self.assertIn("I used the edition filter TOIDelhiBS - Toi_Noida_Digital", second.answer)
         self.assertIn("I used the edition filter TOIDelhiBS - Toi_Noida_Digital", third.answer)
 
+    def test_modi_context_chain_can_continue_to_article_and_edition_followups(self):
+        query_response = QueryResponse(
+            mode="sql",
+            filters={
+                "issue_date": "2026-03-11",
+                "exact_article_count": 17,
+                "retrieval_strategy": "exact_entity_mentions",
+                "entity_label": "Narendra Modi",
+                "edition": "TOIMumbaiBS - MumbaiCity_Digital",
+                "exact_contexts": [
+                    {"headline": "Modi says DMK is rattled by NDA’s popularity in Tamil Nadu", "article_count": 4},
+                    {"headline": "Modi: India actively promoting animation", "article_count": 4},
+                ],
+            },
+            results=[
+                _article(
+                    article_id="101",
+                    headline="Modi says DMK is rattled by NDA’s popularity in Tamil Nadu",
+                    edition="TOIMumbaiBS - MumbaiCity_Digital",
+                    section="Nation",
+                    excerpt="The report centers on Modi's Tamil Nadu campaign pitch and NDA positioning.",
+                ),
+                _article(
+                    article_id="102",
+                    headline="Modi: India actively promoting animation",
+                    edition="TOIMumbaiBS - MumbaiCity_Digital",
+                    section="Nation",
+                    excerpt="The article focuses on Modi's remarks about India's animation and AVGC push.",
+                ),
+            ],
+        )
+        first = self._answer(
+            "how many articles about modi and in which context they are",
+            query_response,
+            routed=self._route_for(mode="sql", intent="topic_count", edition="TOIMumbaiBS - MumbaiCity_Digital"),
+        )
+        second = chat_service.answer_question(
+            "what were those about",
+            "2026-03-11",
+            10,
+            session_context=first.session_context,
+        )
+        third = chat_service.answer_question(
+            "show any article",
+            "2026-03-11",
+            10,
+            session_context=second.session_context,
+        )
+        fourth = chat_service.answer_question(
+            "what edition did you use",
+            "2026-03-11",
+            10,
+            session_context={**third.session_context, "edition": "TOIMumbaiBS - MumbaiCity_Digital"},
+        )
+        self.assertIn("17 relevant articles mentioning Narendra Modi", first.answer)
+        self.assertIn("They were mainly about", second.answer)
+        self.assertIn("Here is one relevant article excerpt", third.answer)
+        self.assertIn("I used the edition filter TOIMumbaiBS - MumbaiCity_Digital", fourth.answer)
+
+    def test_author_context_chain_handles_summary_then_article_then_used_edition(self):
+        query_response = QueryResponse(
+            mode="sql",
+            filters={
+                "issue_date": "2026-03-11",
+                "author": "Abhinav Garg",
+                "edition": "TOIDelhiBS - Toi_Noida_Digital",
+            },
+            results=[
+                {
+                    **_article(
+                        article_id="111",
+                        headline="Excise case: HC seeks stand of Kejriwal & 22 others on ED plea",
+                        edition="TOIDelhiBS - Toi_Noida_Digital",
+                        section="Nation",
+                        excerpt="The report follows the HC hearing in the excise case.",
+                    ),
+                    "author_article_count": 5,
+                },
+                {
+                    **_article(
+                        article_id="112",
+                        headline="Don’t demolish Uttam Nagar houses till hearing today: HC",
+                        edition="TOIDelhiBS - Toi_Noida_Digital",
+                        section="City",
+                        excerpt="The story tracks a demolition dispute before the HC.",
+                    ),
+                    "author_article_count": 5,
+                },
+            ],
+        )
+        first = self._answer(
+            "how many article author abhinav garg wrote and what they about",
+            query_response,
+            routed=self._route_for(mode="sql", intent="author_count", author="Abhinav Garg", edition="TOIDelhiBS - Toi_Noida_Digital"),
+        )
+        second = chat_service.answer_question(
+            "what were those about",
+            "2026-03-11",
+            10,
+            session_context=first.session_context,
+        )
+        third = chat_service.answer_question(
+            "show any one article",
+            "2026-03-11",
+            10,
+            session_context=second.session_context,
+        )
+        fourth = chat_service.answer_question(
+            "which edition was used",
+            "2026-03-11",
+            10,
+            session_context=third.session_context,
+        )
+        self.assertIn("5 articles by Abhinav Garg", first.answer)
+        self.assertIn("They were mainly about", second.answer)
+        self.assertIn("Here is one relevant article excerpt", third.answer)
+        self.assertIn("I used the edition filter TOIDelhiBS - Toi_Noida_Digital", fourth.answer)
+
+    def test_edition_ambiguity_chain_can_clarify_then_continue_summary_followup(self):
+        session_context = {
+            "last_mode": "sql",
+            "issue_date": "2026-03-11",
+            "ambiguous_edition": "Delhi",
+            "ambiguous_publications": [
+                {"publication_name": "TOIDelhiBS - Agra_Digital", "article_count": 134},
+                {"publication_name": "TOIDelhiBS - Bareilly_Digital", "article_count": 134},
+                {"publication_name": "TOIDelhiBS - Toi_Noida_Digital", "article_count": 171},
+            ],
+            "edition": "TOIDelhiBS - Toi_Noida_Digital",
+            "story_candidates": [
+                {"headline": "Civic pressure mounts after policy deadlock"},
+                {"headline": "Transport reforms dominate Delhi policy debate"},
+            ],
+            "result_count": 171,
+        }
+        first = chat_service.answer_question(
+            "which exact editions are available",
+            "2026-03-11",
+            10,
+            session_context=session_context,
+        )
+        second = chat_service.answer_question(
+            "what edition did you use",
+            "2026-03-11",
+            10,
+            session_context={**session_context, "ambiguous_publications": []},
+        )
+        third = chat_service.answer_question(
+            "and what were those about",
+            "2026-03-11",
+            10,
+            session_context={**session_context, "ambiguous_publications": [], "last_topic": "Civic pressure mounts after policy deadlock"},
+        )
+        self.assertIn("available editions", first.answer)
+        self.assertIn("I used the edition filter TOIDelhiBS - Toi_Noida_Digital", second.answer)
+        self.assertIn("They were mainly about", third.answer)
+        self.assertIn("Civic pressure mounts", third.answer)
+
+    def test_generic_article_followup_stays_with_previous_front_page_context(self):
+        session_context = {
+            "last_mode": "sql",
+            "issue_date": "2026-03-11",
+            "edition": "TOIDelhiBS - Toi_Noida_Digital",
+            "section": "FrontPage",
+            "last_topic": "FrontPage coverage in Noida edition",
+            "last_question": "give me the all articles which was on the front page of noida edition",
+            "story_candidates": [
+                {
+                    "headline": "Pothole jolt revives woman declared brain-dead",
+                    "edition": "TOIDelhiBS - Toi_Noida_Digital",
+                    "section": "FrontPage",
+                    "issue_date": "2026-03-11",
+                    "reference_text": "A human-interest front-page story about a woman unexpectedly reviving en route to cremation.",
+                }
+            ],
+            "article_candidates": [
+                {
+                    "article_id": "201",
+                    "headline": "Pothole jolt revives woman declared brain-dead",
+                    "edition": "TOIDelhiBS - Toi_Noida_Digital",
+                    "section": "FrontPage",
+                    "issue_date": "2026-03-11",
+                    "reference_text": "A human-interest front-page story about a woman unexpectedly reviving en route to cremation.",
+                },
+                {
+                    "article_id": "202",
+                    "headline": "SC questions Bengal move on appeal tribunals",
+                    "edition": "TOIDelhiBS - Toi_Noida_Digital",
+                    "section": "FrontPage",
+                    "issue_date": "2026-03-11",
+                    "reference_text": "A front-page legal and governance story tied to Supreme Court scrutiny.",
+                },
+            ],
+        }
+        response = chat_service.answer_question(
+            "give me one article from the above conversation",
+            "2026-03-11",
+            10,
+            session_context=session_context,
+        )
+        self.assertIn("Here is one relevant article excerpt", response.answer)
+        self.assertIn("Pothole jolt revives woman declared brain-dead", response.answer)
+        self.assertNotIn("Sacredspace", response.answer)
+        self.assertEqual(len(response.citations), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
