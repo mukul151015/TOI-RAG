@@ -1,16 +1,9 @@
-import { getDb } from "./db.ts";
+import { query } from "./db.ts";
+import type { RoutedQuery } from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-export interface RoutedQuery {
-  mode: "sql" | "semantic" | "hybrid";
-  issue_date: string | null;
-  edition: string | null;
-  section: string | null;
-  semantic_query: string | null;
-}
-
 // ---------------------------------------------------------------------------
 // Cue lists
 // ---------------------------------------------------------------------------
@@ -43,6 +36,32 @@ const TOKEN_CORRECTIONS: Record<string, string> = {
   worl: "world", wrld: "world", chapmions: "champions", geopoltical: "geopolitical",
 };
 
+const PERSON_ALIAS_MAP: Record<string, { canonical: string; terms: string[] }> = {
+  modi: {
+    canonical: "Narendra Modi",
+    terms: ["narendra modi", "pm modi", "prime minister modi", "modi"],
+  },
+  "narendra modi": {
+    canonical: "Narendra Modi",
+    terms: ["narendra modi", "pm modi", "prime minister modi", "modi"],
+  },
+  "rahul gandhi": {
+    canonical: "Rahul Gandhi",
+    terms: ["rahul gandhi"],
+  },
+};
+
+const KNOWN_ORGANIZATIONS = [
+  "bcci", "congress", "bjp", "dmk", "ed", "supreme court", "high court",
+  "toi", "times of india", "government", "govt",
+];
+
+const KNOWN_PLACES = [
+  "delhi", "mumbai", "kolkata", "chennai", "bangalore", "bengaluru",
+  "hyderabad", "lucknow", "nagpur", "ludhiana", "agra", "bareilly",
+  "dehradun", "iran", "israel", "beijing", "china", "saudi arabia", "bahrain",
+];
+
 const VOCABULARY = new Set([
   "sports", "sport", "section", "edition", "world", "cup", "t20", "victory",
   "win", "winning", "champion", "champions", "budget", "middle", "class",
@@ -58,14 +77,17 @@ export async function routeQuery(
 ): Promise<RoutedQuery> {
   const normalized = normalizeUserQuery(query);
   const lowered = normalized.toLowerCase();
-  let edition = await extractEdition(lowered);
+  let edition = shouldExtractEdition(lowered) ? await extractEdition(lowered) : null;
   if (/\bdelhi edition\b/.test(lowered)) edition = "Delhi";
+  const author = extractAuthor(lowered);
   let section = await extractSection(lowered);
   if (!section && looksLikeSportsIntent(lowered)) section = "Sports";
+  if (!section && looksLikeChinaEditorialIntent(lowered)) section = "Edit";
   if (!section && looksLikeBusinessIntent(lowered)) section = "Business";
 
-  const hasSemantic = SEMANTIC_CUES.some((c) => lowered.includes(c));
-  const hasStructured = !!(edition || section) || STRUCTURED_CUES.some((c) => lowered.includes(c));
+  const intent = detectIntent(lowered, author);
+  const hasSemantic = SEMANTIC_CUES.some((c) => lowered.includes(c)) || intent === "topic_count" || intent === "fact_lookup";
+  const hasStructured = !!(edition || section || author) || STRUCTURED_CUES.some((c) => lowered.includes(c));
 
   let mode: RoutedQuery["mode"];
   if (hasStructured && hasSemantic) mode = "hybrid";
@@ -74,6 +96,12 @@ export async function routeQuery(
 
   if (lowered.includes("which sections had the most articles")) mode = "sql";
 
+  const people = extractPeople(lowered);
+  const organizations = extractOrganizations(lowered);
+  const places = extractPlaces(lowered, edition);
+  const entityTerms = expandEntityTerms(people);
+  const entityLabel = people.length ? people[0] : null;
+
   const semanticQuery =
     mode === "semantic" || mode === "hybrid"
       ? buildSemanticQuery(normalized, edition, section)
@@ -81,10 +109,18 @@ export async function routeQuery(
 
   return {
     mode,
+    intent,
     issue_date: issueDate || extractDate(lowered),
     edition,
     section,
+    author,
     semantic_query: semanticQuery,
+    entity_terms: entityTerms,
+    entity_label: entityLabel,
+    subject_strict: people.length > 0 && intent === "topic_count",
+    content_people: people,
+    content_organizations: organizations,
+    content_locations: places,
   };
 }
 
@@ -185,6 +221,19 @@ async function extractEdition(text: string): Promise<string | null> {
   return canonical || alias.charAt(0).toUpperCase() + alias.slice(1);
 }
 
+function shouldExtractEdition(text: string): boolean {
+  const patterns = [
+    /\bedition\b/,
+    /\bpublished in\b/,
+    /\bfrom the\b.*\bedition\b/,
+    /\bin the\b.*\bedition\b/,
+    /\barticles? in\b.*\bedition\b/,
+    /\b(mumbai|delhi|kolkata|chennai|bangalore|bengaluru|hyderabad|lucknow|nagpur|ludhiana|agra|bareilly|dehradun)\b.*(front page|frontpage|section|articles?|stories|news)/,
+    /(front page|frontpage).*(mumbai|delhi|kolkata|chennai|bangalore|bengaluru|hyderabad|lucknow|nagpur|ludhiana)/,
+  ];
+  return patterns.some((pattern) => pattern.test(text));
+}
+
 // ---------------------------------------------------------------------------
 // Section extraction
 // ---------------------------------------------------------------------------
@@ -237,6 +286,10 @@ function buildSemanticQuery(
   edition: string | null,
   section: string | null,
 ): string {
+  const focusedTopic = extractFocusTopic(query);
+  if (focusedTopic) {
+    return expandSemanticQuery(focusedTopic);
+  }
   let semantic = query;
   if (edition) {
     const core = editionCoreName(edition);
@@ -252,6 +305,39 @@ function buildSemanticQuery(
   semantic = semantic.replace(/\b(?:show me|list all articles|which stories|find articles|articles)\b/gi, "");
   semantic = semantic.replace(/\s+/g, " ").replace(/^[\s,.\-]+|[\s,.\-]+$/g, "");
   return expandSemanticQuery(semantic || query);
+}
+
+function extractFocusTopic(query: string): string | null {
+  const lowered = query.toLowerCase().trim().replace(/[?.]+$/g, "");
+  const patterns = [
+    /\bhow many article around\s+(.+)/,
+    /\bhow many article about\s+(.+)/,
+    /\bhow many article regarding\s+(.+)/,
+    /\bhow many articles around\s+(.+)/,
+    /\bhow many articles about\s+(.+)/,
+    /\bhow many articles regarding\s+(.+)/,
+    /\bhow many times\s+(.+?)\s+(?:name\s+)?appeared\b/,
+    /\bhow many article\s+(.+)/,
+    /\bhow many articles\s+(.+)/,
+    /\b(?:news|articles|stories)\s+about\s+(.+)/,
+  ];
+  for (const pattern of patterns) {
+    const match = lowered.match(pattern);
+    if (!match) continue;
+    const topic = cleanTopicPhrase(match[1]);
+    if (topic) return topic;
+  }
+  return null;
+}
+
+function cleanTopicPhrase(value: string): string {
+  let cleaned = value.toLowerCase().trim().replace(/^[,.\s]+|[,.\s]+$/g, "");
+  cleaned = cleaned.replace(/\band\s+and\b/g, " and");
+  cleaned = cleaned.replace(/\s+and\s+(?:in (?:what|which) context(?: they are)?|(?:what|which) context(?: they are)?|what they (?:were|are)? about.*)$/g, "");
+  cleaned = cleaned.replace(/\bin (?:what|which) context(?: they are)?\b.*$/g, "");
+  cleaned = cleaned.replace(/\b(?:what|which) context(?: they are)?\b.*$/g, "");
+  cleaned = cleaned.replace(/\bwhat they (?:were|are)? about\b.*$/g, "");
+  return cleaned.replace(/\s+/g, " ").trim().replace(/^[,.\s]+|[,.\s]+$/g, "");
 }
 
 function expandSemanticQuery(query: string): string {
@@ -282,6 +368,84 @@ function looksLikeSportsIntent(text: string): boolean {
 function looksLikeBusinessIntent(text: string): boolean {
   return ["budget", "middle class", "inflation", "price rise", "prices", "economists", "growth", "tax", "fuel inflation", "oil prices"]
     .some((c) => text.includes(c));
+}
+
+function looksLikeChinaEditorialIntent(text: string): boolean {
+  return text.includes("china") && (text.includes("growth ambition") || text.includes("growth ambitions") || text.includes("gdp target"));
+}
+
+function detectIntent(text: string, author: string | null): RoutedQuery["intent"] {
+  if (author) {
+    return /\bhow many\b|\bcount\b|\bnumber of\b/.test(text) ? "author_count" : "author_lookup";
+  }
+  if (/\bhow many\b|\bcount\b|\bnumber of\b/.test(text)) {
+    if (/\bhow many times\b|\bname appeared\b|\barticle(?:s)?\s+(?:around|about|regarding|on)\b/.test(text)) {
+      return "topic_count";
+    }
+    if (/\barticle(?:s)?\b/.test(text)) {
+      return "article_count";
+    }
+    return "fact_lookup";
+  }
+  return "lookup";
+}
+
+function extractPeople(text: string): string[] {
+  const out: string[] = [];
+  for (const [alias, meta] of Object.entries(PERSON_ALIAS_MAP)) {
+    if (new RegExp(`\\b${escapeRegex(alias)}\\b`).test(text) && !out.includes(meta.canonical)) {
+      out.push(meta.canonical);
+    }
+  }
+  return out;
+}
+
+function extractOrganizations(text: string): string[] {
+  const out: string[] = [];
+  for (const org of KNOWN_ORGANIZATIONS) {
+    if (new RegExp(`\\b${escapeRegex(org)}\\b`).test(text) && !out.includes(org)) {
+      out.push(org);
+    }
+  }
+  return out;
+}
+
+function extractPlaces(text: string, edition: string | null): string[] {
+  const out: string[] = [];
+  if (edition) {
+    const core = editionCoreName(edition).toLowerCase();
+    if (core) {
+      out.push(core);
+    }
+  }
+  for (const place of KNOWN_PLACES) {
+    if (new RegExp(`\\b${escapeRegex(place)}\\b`).test(text) && !out.includes(place)) {
+      out.push(place);
+    }
+  }
+  return out;
+}
+
+function extractAuthor(text: string): string | null {
+  const match = text.match(/\b(?:by|author)\s+([a-z][a-z\s'.-]{3,80})/i);
+  if (!match) return null;
+  return match[1]
+    .trim()
+    .replace(/\b\w/g, (value) => value.toUpperCase());
+}
+
+function expandEntityTerms(people: string[]): string[] {
+  const out: string[] = [];
+  for (const person of people) {
+    const alias = PERSON_ALIAS_MAP[person.toLowerCase()] || PERSON_ALIAS_MAP[person.toLowerCase().replace(/\s+/g, " ")];
+    const terms = alias ? alias.terms : [person];
+    for (const term of terms) {
+      if (!out.some((existing) => existing.toLowerCase() === term.toLowerCase())) {
+        out.push(term);
+      }
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -383,22 +547,27 @@ function mainPublicationForFamily(alias: string, names: Set<string>): string | n
 export async function fetchPublicationCatalog(): Promise<
   { id: string; publication_name: string }[]
 > {
-  const sql = getDb();
-  const rows = await sql`
-    select id, publication_name from publications order by publication_name
-  `;
-  return rows as { id: string; publication_name: string }[];
+  return await query<{ id: string; publication_name: string }>(
+    "publications",
+    "select=id,publication_name&order=publication_name",
+  );
 }
 
 export async function fetchSectionCatalog(): Promise<string[]> {
-  const sql = getDb();
-  const rows = await sql`
-    select distinct normalized_section
-    from sections
-    where normalized_section is not null
-    order by normalized_section
-  `;
-  return rows.map((r) => r.normalized_section as string);
+  const rows = await query<{ normalized_section: string | null }>(
+    "sections",
+    "select=normalized_section&normalized_section=not.is.null&order=normalized_section",
+  );
+  const seen = new Set<string>();
+  const values: string[] = [];
+  for (const row of rows) {
+    const value = row.normalized_section;
+    if (value && !seen.has(value)) {
+      seen.add(value);
+      values.push(value);
+    }
+  }
+  return values;
 }
 
 // ---------------------------------------------------------------------------

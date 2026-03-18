@@ -1,4 +1,4 @@
-import { getDb } from "./db.ts";
+import { del, insert, query, rpc, update } from "./db.ts";
 
 const SESSION_DAYS = 7;
 
@@ -15,15 +15,8 @@ export async function getAuthenticatedUser(
 ): Promise<{ id: number; email: string } | null> {
   const token = getTokenFromRequest(req);
   if (!token) return null;
-  const sql = getDb();
-  const rows = await sql`
-    select u.id, u.email
-    from user_sessions s
-    join app_users u on u.id = s.user_id
-    where s.session_token = ${token}
-      and s.expires_at > now()
-  `;
-  return rows.length ? (rows[0] as { id: number; email: string }) : null;
+  const rows = await rpc<{ user_id: number; email: string }>("auth_validate_session", { p_token: token });
+  return rows.length ? { id: rows[0].user_id, email: rows[0].email } : null;
 }
 
 export async function getAuthenticatedSession(req: Request): Promise<{
@@ -34,18 +27,12 @@ export async function getAuthenticatedSession(req: Request): Promise<{
 } | null> {
   const token = getTokenFromRequest(req);
   if (!token) return null;
-  const sql = getDb();
-  const rows = await sql`
-    select
-      s.id as session_id,
-      s.user_id,
-      u.email,
-      s.session_context
-    from user_sessions s
-    join app_users u on u.id = s.user_id
-    where s.session_token = ${token}
-      and s.expires_at > now()
-  `;
+  const rows = await rpc<{
+    session_id: number;
+    user_id: number;
+    email: string;
+    session_context: Record<string, unknown> | null;
+  }>("auth_get_session", { p_token: token });
   if (!rows.length) return null;
   const r = rows[0];
   return {
@@ -63,22 +50,19 @@ export async function loginOrCreate(
   const normalizedEmail = email.trim().toLowerCase();
   if (!normalizedEmail) throw new Error("Email is required");
 
-  const sql = getDb();
-  const existing = await sql`
-    select id, email, password_hash
-    from app_users
-    where email = ${normalizedEmail}
-  `;
+  const existing = await query<{ id: number; email: string; password_hash: string }>(
+    "app_users",
+    `select=id,email,password_hash&email=eq.${encodeURIComponent(normalizedEmail)}`,
+  );
 
   let userId: number;
 
   if (existing.length === 0) {
     const passwordHash = await hashPassword(password);
-    const inserted = await sql`
-      insert into app_users (email, password_hash)
-      values (${normalizedEmail}, ${passwordHash})
-      returning id
-    `;
+    const inserted = await insert<{ id: number }>("app_users", {
+      email: normalizedEmail,
+      password_hash: passwordHash,
+    });
     userId = inserted[0].id as number;
   } else {
     const user = existing[0];
@@ -92,18 +76,18 @@ export async function loginOrCreate(
 
   const token = crypto.randomUUID() + "-" + crypto.randomUUID();
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
-  await sql`
-    insert into user_sessions (user_id, session_token, expires_at)
-    values (${userId}, ${token}, ${expiresAt})
-  `;
+  await insert("user_sessions", {
+    user_id: userId,
+    session_token: token,
+    expires_at: expiresAt.toISOString(),
+  });
 
   return { email: normalizedEmail, token };
 }
 
 export async function logoutSession(token: string | null): Promise<void> {
   if (!token) return;
-  const sql = getDb();
-  await sql`delete from user_sessions where session_token = ${token}`;
+  await del("user_sessions", `session_token=eq.${encodeURIComponent(token)}`);
 }
 
 export async function updateSessionContext(
@@ -111,12 +95,9 @@ export async function updateSessionContext(
   sessionContext: Record<string, unknown> | null,
 ): Promise<void> {
   if (sessionContext == null) return;
-  const sql = getDb();
-  await sql`
-    update user_sessions
-    set session_context = ${JSON.stringify(sessionContext)}::jsonb
-    where id = ${sessionId}
-  `;
+  await update("user_sessions", `id=eq.${sessionId}`, {
+    session_context: sessionContext,
+  });
 }
 
 export async function logChatInteraction(params: {
@@ -129,20 +110,16 @@ export async function logChatInteraction(params: {
   sessionFilters: Record<string, unknown> | null;
   citations: unknown[] | null;
 }): Promise<void> {
-  const sql = getDb();
-  await sql`
-    insert into chat_interactions (
-      user_id, session_id, user_question, system_answer,
-      issue_date, mode, session_filters, citations
-    )
-    values (
-      ${params.userId}, ${params.sessionId},
-      ${params.question}, ${params.answer},
-      ${params.issueDate}, ${params.mode},
-      ${JSON.stringify(params.sessionFilters || {})}::jsonb,
-      ${JSON.stringify(params.citations || [])}::jsonb
-    )
-  `;
+  await insert("chat_interactions", {
+    user_id: params.userId,
+    session_id: params.sessionId,
+    user_question: params.question,
+    system_answer: params.answer,
+    issue_date: params.issueDate,
+    mode: params.mode,
+    session_filters: params.sessionFilters || {},
+    citations: params.citations || [],
+  });
 }
 
 async function hashPassword(password: string): Promise<string> {

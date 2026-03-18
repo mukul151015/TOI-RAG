@@ -1,5 +1,5 @@
-import { getDb, type Row } from "./db.ts";
-import { embedTexts } from "./openai.ts";
+import { rpc, type Row } from "./db.ts";
+import { chatCompletion, embedTexts } from "./openai.ts";
 import {
   expandSemanticQueries,
   fetchPublicationCatalog,
@@ -7,8 +7,8 @@ import {
   isSectionCountQuery,
   normalizeUserQuery,
   routeQuery,
-  type RoutedQuery,
 } from "./query-router.ts";
+import type { RoutedQuery } from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -17,6 +17,7 @@ export interface QueryResponse {
   mode: "sql" | "semantic" | "hybrid";
   filters: Record<string, unknown>;
   results: Row[];
+  confidence_score?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -58,16 +59,79 @@ export async function runQuery(
 
   if (isSectionCountQuery(query)) {
     const rows = await fetchSectionCounts(routed.issue_date);
-    return { mode: "sql", filters: { issue_date: routed.issue_date }, results: rows };
+    return { mode: "sql", filters: { issue_date: routed.issue_date, intent: routed.intent }, results: rows, confidence_score: rows.length ? 1 : 0 };
+  }
+
+  if (routed.author) {
+    const rows = await fetchAuthorArticles(
+      routed.issue_date,
+      routed.author,
+      window,
+      routed.edition,
+      routed.section,
+    );
+    const authorCount = await fetchAuthorArticleCount(
+      routed.issue_date,
+      routed.author,
+      routed.edition,
+      routed.section,
+    );
+    return {
+      mode: "sql",
+      filters: stripNulls(routed),
+      results: rows.map((row) => ({ ...row, author_article_count: authorCount })),
+      confidence_score: rows.length ? 1 : 0,
+    };
+  }
+
+  if (routed.intent === "topic_count" && routed.entity_terms.length) {
+    const rows = await fetchEntityMentionArticles(
+      routed.issue_date,
+      routed.entity_terms,
+      window,
+      routed.edition,
+      routed.section,
+      routed.subject_strict,
+    );
+    const exactCount = await fetchEntityMentionCount(
+      routed.issue_date,
+      routed.entity_terms,
+      routed.edition,
+      routed.section,
+      routed.subject_strict,
+    );
+    const exactContexts = await fetchEntityMentionContexts(
+      routed.issue_date,
+      routed.entity_terms,
+      routed.edition,
+      routed.section,
+      5,
+      routed.subject_strict,
+    );
+    return {
+      mode: "sql",
+      filters: {
+        ...stripNulls(routed),
+        exact_article_count: exactCount,
+        exact_contexts: exactContexts,
+        entity_label: routed.entity_label,
+        subject_strict: routed.subject_strict,
+      },
+      results: rows,
+      confidence_score: rows.length ? 1 : 0,
+    };
   }
 
   if (routed.mode === "sql") {
     const rows = await fetchSqlArticles(routed.issue_date, routed.edition, routed.section, window);
-    return { mode: "sql", filters: stripNulls(routed), results: rows };
+    return { mode: "sql", filters: stripNulls(routed), results: rows, confidence_score: rows.length ? 1 : 0 };
   }
 
   // Semantic / hybrid
-  const semanticQueries = expandSemanticQueries(routed.semantic_query || normalizeUserQuery(query));
+  const semanticQueries = [
+    ...expandSemanticQueries(routed.semantic_query || normalizeUserQuery(query)),
+    ...await generateHydeQueries(query),
+  ].filter((value, index, values) => value && values.indexOf(value) === index);
   const embeddings = await embedTexts(semanticQueries);
 
   const perQueryLimit = Math.min(Math.max(window, limit) * 3, 5000);
@@ -99,7 +163,7 @@ export async function runQuery(
     }
   }
 
-  const ranked = rankRows(vectorRows, keywordRows, articleRows, semanticQueries);
+  const ranked = rankRows(vectorRows, keywordRows, articleRows, semanticQueries, routed);
   const results: Row[] = [];
   for (const row of ranked.slice(0, window)) {
     const article = articleRows.get(row.article_id as number);
@@ -112,7 +176,19 @@ export async function runQuery(
     }
   }
 
-  return { mode: routed.mode, filters: stripNulls(routed), results };
+  return { mode: routed.mode, filters: stripNulls(routed), results, confidence_score: computeConfidence(ranked) };
+}
+
+async function generateHydeQueries(query: string): Promise<string[]> {
+  try {
+    const hydeSystem =
+      "You are a Times of India journalist. Given a user query, write a plausible 2-sentence news excerpt that would answer it. Be factual and concise. Output only the excerpt, no preamble.";
+    const hydeDoc = await chatCompletion(hydeSystem, query);
+    if (hydeDoc && hydeDoc.length > 20) return [hydeDoc];
+  } catch {
+    // Fail closed to preserve core retrieval flow.
+  }
+  return [];
 }
 
 // ---------------------------------------------------------------------------
@@ -146,6 +222,7 @@ function rankRows(
   keywordRows: Row[],
   articleRows: Map<number, Row>,
   semanticQueries: string[],
+  routed: RoutedQuery,
 ): Row[] {
   const bestByArticle = new Map<number, Row>();
   const semTerms = semanticTerms(semanticQueries);
@@ -158,7 +235,8 @@ function rankRows(
     const score =
       Number(row.similarity) +
       Math.min(overlap * 0.03, 0.45) +
-      phraseOverlapBonus(article, String(row.chunk_text || ""), semanticQueries);
+      phraseOverlapBonus(article, String(row.chunk_text || ""), semanticQueries) +
+      entityBonus(article, String(row.chunk_text || ""), routed);
     const candidate = { ...row, ranking_score: score, overlap_count: overlap };
     const current = bestByArticle.get(articleId);
     if (!current || score > (current.ranking_score as number)) {
@@ -172,7 +250,7 @@ function rankRows(
     if (!article) continue;
     const overlap = overlapCount(article, String(row.excerpt || ""), semTerms);
     const lexicalScore = Number(row.lexical_score || 0);
-    const score = 0.35 + Math.min(lexicalScore, 1.2) + Math.min(overlap * 0.04, 0.4);
+    const score = 0.35 + Math.min(lexicalScore, 1.2) + Math.min(overlap * 0.04, 0.4) + entityBonus(article, String(row.excerpt || ""), routed);
     const candidate: Row = {
       ...row,
       similarity: lexicalScore,
@@ -187,7 +265,7 @@ function rankRows(
   }
 
   const filtered = [...bestByArticle.values()].filter((item) =>
-    isRelevantMatch(item, articleRows.get(item.article_id as number) || null, semanticQueries)
+    isRelevantMatch(item, articleRows.get(item.article_id as number) || null, semanticQueries, routed)
   );
   filtered.sort((a, b) => {
     const as_ = a.ranking_score as number;
@@ -231,18 +309,18 @@ function phraseOverlapBonus(article: Row, chunkText: string, queries: string[]):
   return Math.min(bonus, 0.36);
 }
 
-function isRelevantMatch(row: Row, article: Row | null, queries: string[]): boolean {
+function isRelevantMatch(row: Row, article: Row | null, queries: string[], routed: RoutedQuery): boolean {
   const sim = Number(row.similarity);
   const overlap = Number(row.overlap_count || 0);
   const ranking = Number(row.ranking_score || sim);
-  if (failsTopicGuard(article, String(row.chunk_text || ""), queries)) return false;
+  if (failsTopicGuard(article, String(row.chunk_text || ""), queries, routed)) return false;
   if (overlap >= 3) return true;
   if (overlap === 2) return sim >= 0.28 || ranking >= 0.36;
   if (overlap === 1) return sim >= 0.42 || ranking >= 0.48;
   return sim >= 0.62 && ranking >= 0.62;
 }
 
-function failsTopicGuard(article: Row | null, chunkText: string, queries: string[]): boolean {
+function failsTopicGuard(article: Row | null, chunkText: string, queries: string[], routed: RoutedQuery): boolean {
   const headline = String((article || {}).headline || "").toLowerCase();
   const leadText = [
     headline,
@@ -250,6 +328,13 @@ function failsTopicGuard(article: Row | null, chunkText: string, queries: string
     chunkText.slice(0, 220),
   ].join(" ").toLowerCase();
   const queryText = queries.join(" ").toLowerCase();
+
+  if (routed.subject_strict && routed.content_people.length) {
+    return !routed.content_people.some((person) => {
+      const term = person.toLowerCase();
+      return headline.includes(term) || leadText.slice(0, 320).includes(term);
+    });
+  }
 
   if (queryText.includes("world cup") && queryText.includes("india")) {
     const primary = ["world champions", "bcci", "wt20", "reward"];
@@ -268,6 +353,34 @@ function failsTopicGuard(article: Row | null, chunkText: string, queries: string
   return false;
 }
 
+function entityBonus(article: Row | null, chunkText: string, routed: RoutedQuery): number {
+  const haystack = [
+    String((article || {}).headline || ""),
+    String((article || {}).section || ""),
+    String((article || {}).edition || ""),
+    String((article || {}).excerpt || ""),
+    chunkText,
+  ].join(" ").toLowerCase();
+  let bonus = 0;
+  for (const person of routed.content_people || []) {
+    if (person && haystack.includes(person.toLowerCase())) bonus += 0.22;
+  }
+  for (const org of routed.content_organizations || []) {
+    if (org && haystack.includes(org.toLowerCase())) bonus += 0.12;
+  }
+  for (const place of routed.content_locations || []) {
+    if (place && haystack.includes(place.toLowerCase())) bonus += 0.12;
+  }
+  return Math.min(bonus, 0.5);
+}
+
+function computeConfidence(rankedRows: Row[]): number {
+  const top = rankedRows.slice(0, 5);
+  if (!top.length) return 0;
+  const scores = top.map((row) => Number(row.similarity || 0));
+  return Number((scores.reduce((sum, score) => sum + score, 0) / top.length).toFixed(4));
+}
+
 // ---------------------------------------------------------------------------
 // DB queries
 // ---------------------------------------------------------------------------
@@ -277,35 +390,13 @@ export async function fetchSqlArticles(
   section: string | null,
   limit: number,
 ): Promise<Row[]> {
-  const sql = getDb();
-  const rows = await sql`
-    select
-      a.id,
-      a.external_article_id,
-      a.headline,
-      s.normalized_section as section,
-      p.publication_name as edition,
-      i.issue_date,
-      left(ab.body_text, 280) as excerpt
-    from articles a
-    join publication_issues pi on pi.id = a.publication_issue_id
-    join publications p on p.id = pi.publication_id
-    join issues i on i.id = pi.issue_id
-    left join sections s on s.id = a.section_id
-    left join article_bodies ab on ab.article_id = a.id
-    where (${issueDate}::date is null or i.issue_date = ${issueDate}::date)
-      and (${edition}::text is null or p.publication_name ilike '%' || ${edition}::text || '%')
-      and (${section}::text is null or s.normalized_section ilike '%' || ${section}::text || '%')
-      and coalesce(nullif(a.headline, ''), nullif(ab.cleaned_text, '')) is not null
-      and (
-        ${section}::text is distinct from 'Sports'
-        or lower(coalesce(a.headline, '') || ' ' || left(coalesce(ab.cleaned_text, ''), 220)) ~
-          '(cricket|football|golf|tennis|hockey|ipl|bcci|coach|match|cup|trophy|champion|squad|player|olympic|medal|surya|rohit|dhoni|goal|league|wt20)'
-      )
-    order by i.issue_date desc, a.id desc
-    limit ${limit}
-  `;
-  return rows as Row[];
+  return await rpc<Row>("fetch_sql_articles_filtered", {
+    issue_dt: issueDate,
+    publication_filter: edition,
+    section_filter: section,
+    result_limit: limit,
+    author_filter: null,
+  });
 }
 
 export async function fetchSqlArticleCount(
@@ -313,55 +404,112 @@ export async function fetchSqlArticleCount(
   edition: string | null,
   section: string | null,
 ): Promise<number> {
-  const sql = getDb();
-  const rows = await sql`
-    select count(*) as article_count
-    from articles a
-    join publication_issues pi on pi.id = a.publication_issue_id
-    join publications p on p.id = pi.publication_id
-    join issues i on i.id = pi.issue_id
-    left join sections s on s.id = a.section_id
-    where (${issueDate}::date is null or i.issue_date = ${issueDate}::date)
-      and (${edition}::text is null or p.publication_name ilike '%' || ${edition}::text || '%')
-      and (${section}::text is null or s.normalized_section ilike '%' || ${section}::text || '%')
-  `;
+  const rows = await rpc<{ article_count: number }>("fetch_sql_article_count_filtered", {
+    issue_dt: issueDate,
+    publication_filter: edition,
+    section_filter: section,
+  });
   return Number(rows[0].article_count);
+}
+
+async function fetchAuthorArticles(
+  issueDate: string | null,
+  author: string,
+  limit: number,
+  edition: string | null,
+  section: string | null,
+): Promise<Row[]> {
+  return await rpc<Row>("fetch_sql_articles_filtered", {
+    issue_dt: issueDate,
+    publication_filter: edition,
+    section_filter: section,
+    result_limit: limit,
+    author_filter: author,
+  });
+}
+
+async function fetchAuthorArticleCount(
+  issueDate: string | null,
+  author: string,
+  edition: string | null,
+  section: string | null,
+): Promise<number> {
+  const rows = await rpc<{ article_count: number }>("fetch_author_article_count_filtered", {
+    issue_dt: issueDate,
+    publication_filter: edition,
+    section_filter: section,
+    author_filter: author,
+  });
+  return Number(rows[0]?.article_count || 0);
 }
 
 export async function fetchMatchingPublications(
   issueDate: string | null,
   editionTerm: string,
 ): Promise<Row[]> {
-  const sql = getDb();
-  return (await sql`
-    select
-      p.publication_name,
-      count(*) as article_count
-    from articles a
-    join publication_issues pi on pi.id = a.publication_issue_id
-    join publications p on p.id = pi.publication_id
-    join issues i on i.id = pi.issue_id
-    where (${issueDate}::date is null or i.issue_date = ${issueDate}::date)
-      and p.publication_name ilike '%' || ${editionTerm}::text || '%'
-    group by p.publication_name
-    order by article_count desc, p.publication_name
-  `) as Row[];
+  return await rpc<Row>("fetch_matching_pubs", {
+    issue_dt: issueDate,
+    edition_term: editionTerm,
+  });
 }
 
 async function fetchSectionCounts(issueDate: string | null): Promise<Row[]> {
-  const sql = getDb();
-  return (await sql`
-    select
-      s.normalized_section as section,
-      count(*) as article_count
-    from articles a
-    join publication_issues pi on pi.id = a.publication_issue_id
-    join issues i on i.id = pi.issue_id
-    left join sections s on s.id = a.section_id
-    where (${issueDate}::date is null or i.issue_date = ${issueDate}::date)
-    group by s.normalized_section
-    order by article_count desc, section nulls last
-  `) as Row[];
+  return await rpc<Row>("fetch_section_counts_by_date", {
+    issue_dt: issueDate,
+  });
+}
+
+async function fetchEntityMentionArticles(
+  issueDate: string | null,
+  entityTerms: string[],
+  limit: number,
+  edition: string | null,
+  section: string | null,
+  headlinePriorityOnly: boolean,
+): Promise<Row[]> {
+  return await rpc<Row>("fetch_entity_mention_articles_filtered", {
+    issue_dt: issueDate,
+    entity_terms: entityTerms,
+    publication_filter: edition,
+    section_filter: section,
+    result_limit: limit,
+    headline_priority_only: headlinePriorityOnly,
+  });
+}
+
+async function fetchEntityMentionCount(
+  issueDate: string | null,
+  entityTerms: string[],
+  edition: string | null,
+  section: string | null,
+  headlinePriorityOnly: boolean,
+): Promise<number> {
+  const rows = await rpc<{ article_count: number }>("fetch_entity_mention_count_filtered", {
+    issue_dt: issueDate,
+    entity_terms: entityTerms,
+    publication_filter: edition,
+    section_filter: section,
+    headline_priority_only: headlinePriorityOnly,
+  });
+  return Number(rows[0]?.article_count || 0);
+}
+
+async function fetchEntityMentionContexts(
+  issueDate: string | null,
+  entityTerms: string[],
+  edition: string | null,
+  section: string | null,
+  limit: number,
+  headlinePriorityOnly: boolean,
+): Promise<Row[]> {
+  return await rpc<Row>("fetch_entity_mention_contexts_filtered", {
+    issue_dt: issueDate,
+    entity_terms: entityTerms,
+    publication_filter: edition,
+    section_filter: section,
+    result_limit: limit,
+    headline_priority_only: headlinePriorityOnly,
+  });
 }
 
 async function semanticSearch(
@@ -371,13 +519,13 @@ async function semanticSearch(
   section: string | null,
   limit: number,
 ): Promise<Row[]> {
-  const sql = getDb();
-  const embeddingStr = JSON.stringify(embedding);
-  return (await sql`
-    select * from match_article_chunks_filtered(
-      ${embeddingStr}::vector, ${issueDate}::date, ${edition}, ${section}, ${limit}
-    )
-  `) as Row[];
+  return await rpc<Row>("match_article_chunks_filtered", {
+    query_embedding: JSON.stringify(embedding),
+    issue_dt: issueDate,
+    publication_filter: edition,
+    section_filter: section,
+    match_count: limit,
+  });
 }
 
 async function keywordSearch(
@@ -387,63 +535,20 @@ async function keywordSearch(
   section: string | null,
   limit: number,
 ): Promise<Row[]> {
-  const sql = getDb();
-  return (await sql`
-    with q as (
-      select websearch_to_tsquery('english', ${queryText}) as tsq
-    )
-    select
-      a.id as article_id,
-      a.external_article_id,
-      a.headline,
-      s.normalized_section as section,
-      p.publication_name as edition,
-      i.issue_date,
-      left(ab.body_text, 400) as excerpt,
-      ts_rank_cd(
-        setweight(to_tsvector('english', coalesce(a.headline, '')), 'A') ||
-        setweight(coalesce(ab.body_tsv, to_tsvector('english', '')), 'B'),
-        q.tsq
-      ) as lexical_score
-    from q
-    join articles a on true
-    join publication_issues pi on pi.id = a.publication_issue_id
-    join publications p on p.id = pi.publication_id
-    join issues i on i.id = pi.issue_id
-    left join sections s on s.id = a.section_id
-    left join article_bodies ab on ab.article_id = a.id
-    where (${issueDate}::date is null or i.issue_date = ${issueDate}::date)
-      and (${edition}::text is null or p.publication_name ilike '%' || ${edition}::text || '%')
-      and (${section}::text is null or s.normalized_section ilike '%' || ${section}::text || '%')
-      and (
-        setweight(to_tsvector('english', coalesce(a.headline, '')), 'A') ||
-        setweight(coalesce(ab.body_tsv, to_tsvector('english', '')), 'B')
-      ) @@ q.tsq
-    order by lexical_score desc, a.id
-    limit ${limit}
-  `) as Row[];
+  return await rpc<Row>("keyword_search_filtered", {
+    query_text: queryText,
+    issue_dt: issueDate,
+    publication_filter: edition,
+    section_filter: section,
+    match_count: limit,
+  });
 }
 
 async function fetchArticlesForIds(articleIds: number[]): Promise<Row[]> {
   if (!articleIds.length) return [];
-  const sql = getDb();
-  return (await sql`
-    select
-      a.id,
-      a.external_article_id,
-      a.headline,
-      s.normalized_section as section,
-      p.publication_name as edition,
-      i.issue_date,
-      left(ab.body_text, 400) as excerpt
-    from articles a
-    join publication_issues pi on pi.id = a.publication_issue_id
-    join publications p on p.id = pi.publication_id
-    join issues i on i.id = pi.issue_id
-    left join sections s on s.id = a.section_id
-    left join article_bodies ab on ab.article_id = a.id
-    where a.id = any(${articleIds})
-  `) as Row[];
+  return await rpc<Row>("fetch_articles_by_ids", {
+    article_ids: articleIds,
+  });
 }
 
 // ---------------------------------------------------------------------------
