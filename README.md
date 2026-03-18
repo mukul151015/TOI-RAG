@@ -1,8 +1,9 @@
-# TOI RAG FastAPI
+# TOI RAG
 
 Starter project for TOI E-Paper RAG using:
 
-- FastAPI
+- FastAPI for local ingest/admin utilities and static UI serving
+- Supabase Edge Functions for auth, catalog, and chat APIs
 - Supabase Postgres
 - `pgvector`
 - OpenAI embeddings with `dimensions=512`
@@ -22,8 +23,8 @@ Options:
 - Normalized schema for TOI feed metadata
 - Feed ingestion endpoint
 - Article chunk embedding pipeline
-- SQL, semantic, and hybrid query endpoint
-- Chat endpoint on top of retrieved articles
+- Supabase Edge auth/catalog/chat layer in [supabase/functions](/Users/mukulkumar/Documents/Rag/supabase/functions)
+- Static frontend in [app/ui/index.html](/Users/mukulkumar/Documents/Rag/app/ui/index.html)
 
 ## Setup
 
@@ -39,11 +40,21 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-6. Start the API:
+6. Start the local utility app:
 
 ```bash
 uvicorn app.main:app --reload
 ```
+
+7. Configure the frontend API base in [app/ui/config.js](/Users/mukulkumar/Documents/Rag/app/ui/config.js):
+
+```js
+window.TOI_APP_CONFIG = {
+  apiBaseUrl: "https://YOUR_PROJECT_REF.supabase.co/functions/v1",
+};
+```
+
+8. Deploy the Supabase Edge Functions after running [supabase/sql/edge_rpc.sql](/Users/mukulkumar/Documents/Rag/supabase/sql/edge_rpc.sql).
 
 ## Endpoints
 
@@ -51,8 +62,8 @@ uvicorn app.main:app --reload
 - `POST /ingest/feed`
 - `GET /embeddings/status`
 - `POST /embeddings/backfill`
-- `POST /query`
-- `POST /chat`
+
+The frontend auth, catalog, and chat requests are expected to go to Supabase Edge Functions, not to FastAPI.
 
 ### Ingest example
 
@@ -60,22 +71,6 @@ uvicorn app.main:app --reload
 curl -X POST http://localhost:8000/ingest/feed \
   -H "Content-Type: application/json" \
   -d '{"feed_url":"https://embed-epaper.indiatimes.com/api/rss-feeds-json/toi/11_03_2026","org_id":"toi"}'
-```
-
-### Query example
-
-```bash
-curl -X POST http://localhost:8000/query \
-  -H "Content-Type: application/json" \
-  -d '{"query":"Find articles about the Iran conflict published in the Mumbai edition","issue_date":"2026-03-11"}'
-```
-
-### Chat example
-
-```bash
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"question":"Summarize the Iran conflict coverage in the Mumbai edition","issue_date":"2026-03-11"}'
 ```
 
 ### Recommended ingest flow
