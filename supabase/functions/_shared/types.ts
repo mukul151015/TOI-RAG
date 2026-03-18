@@ -15,6 +15,12 @@ export interface RoutedQuery {
   section: string | null;
   author: string | null;
   semantic_query: string | null;
+  entity_terms: string[];
+  entity_label: string | null;
+  subject_strict: boolean;
+  content_people: string[];
+  content_organizations: string[];
+  content_locations: string[];
 }
 
 export interface QueryAnalysis {

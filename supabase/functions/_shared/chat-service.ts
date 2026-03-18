@@ -46,11 +46,23 @@ export async function answerQuestion(
   history: { role: string; content: string }[] | null = null,
   sessionContext: Record<string, unknown> | null = null,
 ): Promise<ChatResponse> {
+  const contextualFollowup = formatContextualFollowupAnswer(question, sessionContext);
+  if (contextualFollowup) {
+    contextualFollowup.session_context = sessionContext;
+    return contextualFollowup;
+  }
+
   // Edition clarification followup
   const editionClarification = formatEditionFollowupAnswer(question, sessionContext);
   if (editionClarification) {
     editionClarification.session_context = sessionContext;
     return editionClarification;
+  }
+
+  const editionUsage = formatEditionUsageAnswer(question, sessionContext);
+  if (editionUsage) {
+    editionUsage.session_context = sessionContext;
+    return editionUsage;
   }
 
   // Article text from context
@@ -66,14 +78,35 @@ export async function answerQuestion(
   const retrievalQuestion = augmentFollowupQuestion(question, history, sessionContext);
   let edition = filterValue(sessionFilters, "edition");
   let section = filterValue(sessionFilters, "section");
+  const userRouted = await routeQuery(question, issueDate);
   const routed = await routeQuery(retrievalQuestion, issueDate);
+  routed.intent = userRouted.intent;
+  if (userRouted.author) routed.author = userRouted.author;
+  if (!routed.entity_terms.length && userRouted.entity_terms.length) {
+    routed.entity_terms = userRouted.entity_terms;
+    routed.entity_label = userRouted.entity_label;
+    routed.subject_strict = userRouted.subject_strict;
+    routed.content_people = userRouted.content_people;
+    routed.content_organizations = userRouted.content_organizations;
+    routed.content_locations = userRouted.content_locations;
+  }
   edition = edition || contextValue(sessionContext, "edition", question);
   section = section || contextValue(sessionContext, "section", question);
 
   const broadListing = isBroadListingQuery(question);
-  const countQuery = isCountQuery(question);
+  const countQuery = isCountQuery(question) || ["topic_count", "author_count", "article_count"].includes(routed.intent);
   const reqArticleCount = requestedArticleCount(question);
   const showRefs = shouldShowReferences(question);
+
+  if (wantsExactArticleListing(question) && reqArticleCount && sessionContext && isReferentialFollowup(question)) {
+    const cached = Array.isArray(sessionContext.article_candidates) ? sessionContext.article_candidates as Row[] : [];
+    if (cached.length) {
+      const mode = String(sessionContext.last_mode || "sql");
+      const resp = formatArticleListing(question, { mode, filters: {}, results: cached }, reqArticleCount);
+      resp.session_context = sessionContext;
+      return resp;
+    }
+  }
 
   let resultWindow = limit;
   if (countQuery || isSectionCountQuery(question) || (broadListing && routed.mode === "sql")) {
@@ -106,7 +139,7 @@ export async function answerQuestion(
 
   // Count
   if (countQuery) {
-    const resp = await formatCountAnswer(question, queryResponse);
+    const resp = await formatCountAnswer(question, queryResponse, routed);
     resp.session_context = await buildSessionContext(question, queryResponse, sessionContext);
     return resp;
   }
@@ -160,12 +193,13 @@ export async function answerQuestion(
   }
 
   const conversationCtx = formatHistory(history);
-  const userPrompt =
-    (conversationCtx ? `Conversation so far:\n${conversationCtx}\n\n` : "") +
-    `Question: ${question}\n\n` +
-    "Write a concise answer. Focus on the main story themes and avoid edition-by-edition narration unless it is essential.\n\n" +
-    "Retrieved articles:\n\n" +
-    contextLines.join("\n\n---\n\n");
+  const userPrompt = buildLayeredAnswerPrompt(
+    question,
+    queryResponse,
+    conversationCtx,
+    contextLines,
+    showRefs,
+  );
 
   const answer = await chatCompletion(SYSTEM_PROMPT, userPrompt);
   return {
@@ -304,14 +338,121 @@ function formatContextArticleTextAnswer(
   };
 }
 
-async function formatCountAnswer(_question: string, qr: QueryResponse): Promise<ChatResponse> {
+async function formatCountAnswer(
+  question: string,
+  qr: QueryResponse,
+  routed: { intent?: string; author?: string | null },
+): Promise<ChatResponse> {
   const filters = qr.filters;
   const edition = filters.edition as string | null;
   const section = filters.section as string | null;
   const issueDate = filters.issue_date as string | null;
-  const count = qr.mode === "sql"
+  const author = (filters.author as string | null) || routed.author || null;
+  const exactCount = Number(filters.exact_article_count || 0);
+  const exactContexts = Array.isArray(filters.exact_contexts) ? filters.exact_contexts as Row[] : [];
+  const entityLabel = (filters.entity_label as string | null) || extractTopicFromQuestion(question);
+  const wantsContext = asksForContext(question);
+
+  if (routed.intent === "author_count" || author) {
+    const authorCount = Number(qr.results[0]?.author_article_count || 0);
+    if (wantsContext) {
+      const storyGroups = groupUniqueStories(qr.results);
+      if (storyGroups.length) {
+        const summary = storyGroups
+          .slice(0, 3)
+          .map((story) => `${story.headline} (${story.count} article${story.count === 1 ? "" : "s"})`)
+          .join("; ");
+        return {
+          answer: `I found ${authorCount} article${authorCount === 1 ? "" : "s"} by ${author}. They are mainly about ${summary}.`,
+          mode: qr.mode,
+          citations: [],
+          session_context: null,
+        };
+      }
+    }
+    return {
+      answer: `I found ${authorCount} article${authorCount === 1 ? "" : "s"} by ${author}.`,
+      mode: qr.mode,
+      citations: [],
+      session_context: null,
+    };
+  }
+
+  if (routed.intent === "topic_count") {
+    const topic = topicDisplayLabel(entityLabel);
+    if (exactCount > 0) {
+      if (wantsContext && exactContexts.length) {
+        const dominantText = exactContexts
+          .slice(0, 4)
+          .filter((row) => row.headline)
+          .map((row) => `${row.headline} (${row.article_count || 0} article${Number(row.article_count || 0) === 1 ? "" : "s"})`)
+          .join("; ");
+        return {
+          answer: `I found ${exactCount} articles directly focused on ${topic}.${dominantText ? ` They were mainly about ${dominantText}.` : ""}`,
+          mode: qr.mode,
+          citations: [],
+          session_context: null,
+        };
+      }
+      return {
+        answer: `I found ${exactCount} articles directly focused on ${topic}.`,
+        mode: qr.mode,
+        citations: [],
+        session_context: null,
+      };
+    }
+
+    const storyGroups = groupUniqueStories(qr.results);
+    const articleCount = qr.results.length;
+    if (wantsContext) {
+      if (!storyGroups.length) {
+        return {
+          answer: `I found ${articleCount} relevant articles mentioning ${topic}.`,
+          mode: qr.mode,
+          citations: [],
+          session_context: null,
+        };
+      }
+      const dominant = storyGroups
+        .slice(0, 3)
+        .map((story) => `${story.headline} (${story.count} article${story.count === 1 ? "" : "s"})`)
+        .join("; ");
+      return {
+        answer: `I found ${articleCount} relevant articles mentioning ${topic}. The coverage is mainly in the context of ${dominant}.`,
+        mode: qr.mode,
+        citations: [],
+        session_context: null,
+      };
+    }
+    return {
+      answer: `I found ${articleCount} relevant articles about ${topic}.`,
+      mode: qr.mode,
+      citations: [],
+      session_context: null,
+    };
+  }
+
+  const count = exactCount || (qr.mode === "sql"
     ? await fetchSqlArticleCount(issueDate || null, edition || null, section || null)
-    : qr.results.length;
+    : qr.results.length);
+  if (exactCount) {
+    if (wantsContext && exactContexts.length) {
+      const contexts = exactContexts.slice(0, 4).map((row) => String(row.headline || "").trim()).filter(Boolean);
+      const contextText = contexts.length ? ` They were mainly about ${contexts.join("; ")}.` : "";
+      return {
+        answer: `I found ${count} articles directly focused on ${entityLabel}.${contextText}`,
+        mode: qr.mode,
+        citations: [],
+        session_context: null,
+      };
+    }
+    return {
+      answer: `I found ${count} articles directly focused on ${entityLabel}.`,
+      mode: qr.mode,
+      citations: [],
+      session_context: null,
+    };
+  }
   const scopeParts: string[] = [];
   scopeParts.push(section ? `${section} articles` : "articles");
   if (edition) scopeParts.push(`in ${edition}`);
@@ -358,6 +499,48 @@ function formatEditionFollowupAnswer(
   }
   lines.push("Ask for one of these exact editions and I'll give you the precise result.");
   return { answer: lines.join("\n"), mode: String(sessionContext.last_mode || "sql"), citations: [], session_context: null };
+}
+
+function formatEditionUsageAnswer(
+  question: string,
+  sessionContext: Record<string, unknown> | null,
+): ChatResponse | null {
+  if (!sessionContext) return null;
+  if (!asksForUsedEdition(question)) return null;
+  const edition = sessionContext.edition as string | undefined;
+  const issueDate = sessionContext.issue_date as string | undefined;
+  if (!edition) return null;
+  const dateText = issueDate ? ` for ${issueDate}` : "";
+  return {
+    answer: `I used the edition filter ${edition}${dateText}.`,
+    mode: String(sessionContext.last_mode || "sql"),
+    citations: [],
+    session_context: null,
+  };
+}
+
+function formatContextualFollowupAnswer(
+  question: string,
+  sessionContext: Record<string, unknown> | null,
+): ChatResponse | null {
+  if (!sessionContext) return null;
+  const candidates = Array.isArray(sessionContext.story_candidates)
+    ? sessionContext.story_candidates as Record<string, unknown>[]
+    : [];
+  if (!candidates.length || !asksContextualSummaryFollowup(question)) return null;
+  const subject = contextualSubjectLabel(sessionContext);
+  const count = Number(sessionContext.result_count || candidates.length);
+  const noun = contextualResultNoun(sessionContext);
+  const summary = candidates
+    .slice(0, 3)
+    .map((item) => String(item.headline || "Untitled"))
+    .join("; ");
+  return {
+    answer: `I found ${count} ${noun}${count === 1 ? "" : "s"}${subject}. They were mainly about ${summary}.`,
+    mode: String(sessionContext.last_mode || "sql"),
+    citations: [],
+    session_context: null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -412,6 +595,10 @@ async function buildSessionContext(
   if (filters.issue_date) base.issue_date = filters.issue_date;
   base.last_mode = qr.mode;
   base.last_question = question;
+  base.result_count = qr.results.length;
+  if (filters.author) base.author = filters.author;
+  if (filters.entity_label) base.query_focus = filters.entity_label;
+  if (filters.semantic_query) base.query_focus = filters.semantic_query;
 
   const stories = groupUniqueStories(qr.results);
   const storyTitles = stories.slice(0, 5).map((s) => s.headline);
@@ -467,6 +654,42 @@ function isCountQuery(question: string): boolean {
   return [/\bhow many\b/, /\bcount\b/, /\bnumber of\b/, /\bnumbers of\b/].some((p) => p.test(lowered));
 }
 
+function asksForContext(question: string): boolean {
+  const lowered = question.toLowerCase();
+  return [
+    "in what context",
+    "in which context",
+    "what context",
+    "which context",
+    "what was the context",
+    "what they were about",
+    "what they are about",
+    "what they about",
+    "what were they about",
+    "what are they about",
+    "appeared and in what context",
+  ].some((phrase) => lowered.includes(phrase));
+}
+
+function asksContextualSummaryFollowup(question: string): boolean {
+  const lowered = question.toLowerCase().trim();
+  return [
+    /\band what they were about\b/,
+    /\band what they are about\b/,
+    /\band what they about\b/,
+    /\bwhat they were about\b/,
+    /\bwhat they are about\b/,
+    /\bwhat were they about\b/,
+    /\bwhat are they about\b/,
+    /\bwhat were those about\b/,
+    /\bwhat are those about\b/,
+    /\band what was it about\b/,
+    /\bwhat was it about\b/,
+    /\bwhat was that about\b/,
+    /\band what was that about\b/,
+  ].some((pattern) => pattern.test(lowered));
+}
+
 function shouldUseSummaryAnswer(question: string, mode: string): boolean {
   if (mode !== "semantic" && mode !== "hybrid") return false;
   if (wantsExactArticleListing(question) || shouldShowReferences(question)) return false;
@@ -487,7 +710,8 @@ function requestedArticleCount(question: string): number | null {
 function wantsArticleText(question: string): boolean {
   const lowered = question.toLowerCase();
   const patterns = [
-    /\btext of\b.*\barticle\b/, /\barticle text\b/, /\btext of any article\b/,
+    /\btext of\b.*\barticle\b/, /\barticle text\b/, /\bone article\b.*\babove conversation\b/,
+    /\bgive me one article\b/, /\btext of any article\b/,
     /\bany one article\b/, /\bany one of article\b/, /\bany article\b/,
     /\bshow me text\b/, /\bshow the text\b/, /\bshow an article\b/,
     /\bshow any one\b.*\barticle\b/, /\bshow any\b.*\barticle\b/,
@@ -528,6 +752,19 @@ function wantsEditionClarification(question: string): boolean {
     /\bwhat exact editions\b/, /\bwhich exact editions\b/,
     /\bwhat editions are available\b/, /\bwhich editions are available\b/,
     /\bavailable editions\b/, /\bexact editions\b/,
+  ].some((p) => p.test(lowered));
+}
+
+function asksForUsedEdition(question: string): boolean {
+  const lowered = question.toLowerCase();
+  return [
+    /\bwhat edition did you use\b/,
+    /\bwhich edition did you use\b/,
+    /\bwhat exact edition did you use\b/,
+    /\bwhich exact edition did you use\b/,
+    /\bwhat edition was used\b/,
+    /\bwhich edition was used\b/,
+    /\bused edition\b/,
   ].some((p) => p.test(lowered));
 }
 
@@ -726,6 +963,7 @@ function isGenericArticleRequest(question: string): boolean {
   if (/\b(regarding|about|on)\b/.test(lowered)) return false;
   return [
     /\bany one article\b/, /\bany one of article\b/, /\bany article\b/,
+    /\bgive me one article\b/, /\bone article\b.*\babove conversation\b/,
     /\bshow any one\b.*\barticle\b/, /\bgive any one\b.*\barticle\b/, /\bgive any\b.*\barticle\b/,
   ].some((p) => p.test(lowered));
 }
@@ -775,6 +1013,84 @@ function formatHistory(history: { role: string; content: string }[] | null): str
     lines.push(`${role === "user" ? "User" : "Assistant"}: ${content.trim()}`);
   }
   return lines.join("\n");
+}
+
+function extractTopicFromQuestion(question: string): string {
+  const lowered = question.toLowerCase().trim().replace(/^[?.\s]+|[?.\s]+$/g, "");
+  const patterns = [
+    /\bhow many times\s+(.+?)\s+(?:name\s+)?appeared\b/,
+    /\b([a-z][a-z\s'.-]+?)\s+name appeared\b/,
+    /\bhow many article(?:s)?\s+(?:about|around|regarding|on)\s+(.+)/,
+    /\b(?:around|about|regarding|on)\s+(.+)/,
+  ];
+  for (const pattern of patterns) {
+    const match = lowered.match(pattern);
+    if (match) {
+      const topic = cleanTopicPhrase(match[1]);
+      if (topic) return topicDisplayLabel(topic);
+    }
+  }
+  const fallback = cleanTopicPhrase(
+    lowered.replace(/\bhow many\b|\barticles?\b|\btimes\b|\bappeared\b|\bname\b/g, " "),
+  ).replace(/\s+/g, " ").trim();
+  return fallback ? topicDisplayLabel(fallback) : "that topic";
+}
+
+function cleanTopicPhrase(value: string): string {
+  let cleaned = value.toLowerCase().trim().replace(/^[,.\s]+|[,.\s]+$/g, "");
+  cleaned = cleaned.replace(/\band\s+and\b/g, " and");
+  cleaned = cleaned.replace(/\s+and\s+(?:in (?:what|which) context(?: they are)?|(?:what|which) context(?: they are)?|what they (?:were|are)? about.*)$/g, "");
+  cleaned = cleaned.replace(/\bin (?:what|which) context(?: they are)?\b.*$/g, "");
+  cleaned = cleaned.replace(/\b(?:what|which) context(?: they are)?\b.*$/g, "");
+  cleaned = cleaned.replace(/\bwhat they (?:were|are)? about\b.*$/g, "");
+  return cleaned.replace(/\s+/g, " ").trim().replace(/^[,.\s]+|[,.\s]+$/g, "");
+}
+
+function topicDisplayLabel(value: string): string {
+  const normalized = value.toLowerCase().trim();
+  if (normalized === "modi") return "Narendra Modi";
+  return normalized.replace(/\b\w/g, (token) => token.toUpperCase());
+}
+
+function contextualSubjectLabel(sessionContext: Record<string, unknown> | null): string {
+  if (!sessionContext) return "";
+  if (sessionContext.author) return ` by ${sessionContext.author}`;
+  if (sessionContext.last_topic) return ` for ${sessionContext.last_topic}`;
+  return "";
+}
+
+function contextualResultNoun(sessionContext: Record<string, unknown> | null): string {
+  if (!sessionContext) return "result";
+  if (sessionContext.author) return "article";
+  if (sessionContext.section) return "story";
+  return "result";
+}
+
+function buildLayeredAnswerPrompt(
+  question: string,
+  qr: QueryResponse,
+  conversationCtx: string,
+  contextLines: string[],
+  showReferences: boolean,
+): string {
+  const answerContract = [
+    "Answer contract:",
+    "- Start with the direct answer to the user's question.",
+    "- Base every factual claim on the evidence blocks only.",
+    "- If the evidence is partial, say so explicitly.",
+    "- Avoid repetitive edition-by-edition narration unless it changes the answer.",
+    showReferences
+      ? "- Mention the most relevant supporting examples naturally in the answer."
+      : "- Do not output a raw citation list unless explicitly requested.",
+  ];
+  return [
+    `Layer 1 - User question:\n${question}`,
+    `Layer 2 - Conversation context:\n${conversationCtx || "No prior conversation context."}`,
+    `Layer 3 - Retrieval metadata:\nMode: ${qr.mode}\nFilters: ${JSON.stringify(qr.filters)}\nRetrieved results: ${qr.results.length}`,
+    `Layer 4 - Evidence:\n${contextLines.length ? contextLines.join("\n\n---\n\n") : "No evidence blocks available."}`,
+    "Layer 5 - Edge-case policy:\n- If no evidence blocks support the answer, say you could not confirm it from the retrieved articles.\n- If multiple evidence blocks describe the same story, consolidate them.\n- If the user is asking for themes or context, summarize the dominant contexts rather than listing every article.\n- If the question is factual, prefer exact figures or statements from the evidence over general wording.",
+    `Layer 6 - ${answerContract.join("\n")}`,
+  ].join("\n\n");
 }
 
 // ---------------------------------------------------------------------------
