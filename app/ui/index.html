@@ -670,8 +670,9 @@
       </div>
     </div>
 
+    <script src="./config.js"></script>
     <script>
-      const API_BASE = "https://kgsmvzywxmzpzdgpxkwo.supabase.co/functions/v1";
+      const API_BASE = (window.TOI_APP_CONFIG?.apiBaseUrl || "").replace(/\/$/, "");
       const messages = document.getElementById("messages");
       const questionInput = document.getElementById("question");
       const editionFilter = document.getElementById("editionFilter");
@@ -709,6 +710,19 @@
         const headers = { "Content-Type": "application/json" };
         if (token) headers["Authorization"] = `Bearer ${token}`;
         return headers;
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }
+
+      function scrollMessagesToBottom() {
+        messages.scrollTop = messages.scrollHeight;
       }
 
       function messageLabel(role) {
