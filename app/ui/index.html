@@ -3,358 +3,373 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>TOI RAG Chat</title>
+    <title>Times of India E-Paper Assistant</title>
     <style>
       :root {
-        --bg: #f5efe2;
-        --bg-panel: rgba(255, 252, 245, 0.92);
-        --ink: #1f2a2e;
-        --muted: #5f6b6f;
-        --accent: #b7472a;
-        --accent-soft: #e8b98d;
-        --line: rgba(31, 42, 46, 0.14);
-        --user: #183a4a;
-        --assistant: #f8f1e5;
-        --shadow: 0 24px 60px rgba(83, 54, 21, 0.16);
+        --bg: #f7f7f7;
+        --panel: #ffffff;
+        --panel-soft: #f3f3f3;
+        --ink: #1a1a1a;
+        --muted: #6b6b6b;
+        --line: #e0e0e0;
+        --brand: #e32e2b;
+        --user: #1a1a1a;
+        --assistant: #f3f3f3;
+        --overlay: rgba(26, 26, 26, 0.42);
+        --modal-shadow: 0 22px 44px rgba(0, 0, 0, 0.14);
       }
 
       * {
         box-sizing: border-box;
       }
 
+      html,
       body {
         margin: 0;
-        height: 100vh;
-        overflow: hidden;
+        min-height: 100%;
+      }
+
+      body {
+        background: var(--bg);
         color: var(--ink);
-        font-family: Georgia, "Times New Roman", serif;
-        background:
-          radial-gradient(circle at top left, rgba(183, 71, 42, 0.16), transparent 24rem),
-          radial-gradient(circle at bottom right, rgba(24, 58, 74, 0.12), transparent 24rem),
-          linear-gradient(135deg, #efe2c1 0%, #f8f5ee 45%, #efe8d8 100%);
+        font-family:
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          system-ui,
+          sans-serif;
       }
 
-      .shell {
-        max-width: 1200px;
-        margin: 0 auto;
-        padding: 24px;
-        height: 100vh;
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
       }
 
-      .frame {
+      .app-shell {
+        min-height: 100vh;
+        padding: 20px;
+      }
+
+      .layout {
         display: grid;
-        grid-template-columns: 280px minmax(0, 1fr);
-        gap: 18px;
-        height: calc(100vh - 48px);
-        overflow: hidden;
+        grid-template-columns: 320px minmax(0, 1fr);
+        gap: 20px;
+        min-height: calc(100vh - 40px);
       }
 
       .panel {
-        background: var(--bg-panel);
+        background: var(--panel);
         border: 1px solid var(--line);
-        border-radius: 24px;
-        box-shadow: var(--shadow);
-        backdrop-filter: blur(16px);
       }
 
       .sidebar {
-        padding: 22px 20px;
         display: flex;
         flex-direction: column;
-        gap: 18px;
-        overflow: hidden;
+        padding: 24px;
+        min-height: 0;
       }
 
-      .eyebrow {
-        letter-spacing: 0.14em;
-        font-size: 0.73rem;
-        text-transform: uppercase;
-        color: var(--accent);
-        margin-bottom: 8px;
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
       }
 
-      .title {
-        margin: 0;
-        font-size: 2.05rem;
-        line-height: 0.96;
+      .brand-mark {
+        width: 3px;
+        height: 30px;
+        background: var(--brand);
+        flex: 0 0 auto;
       }
 
-      .subtitle {
+      .brand-label {
         margin: 0;
         color: var(--muted);
-        font-size: 0.98rem;
+        font-size: 0.78rem;
+        font-variant: small-caps;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      .sidebar-title {
+        margin: 24px 0 8px;
+        font-size: 2rem;
+        line-height: 1.02;
+        font-weight: 600;
+      }
+
+      .sidebar-subtitle,
+      .header-subtitle,
+      .modal-note {
+        margin: 0;
+        color: var(--muted);
         line-height: 1.5;
       }
 
-      .label {
+      .control-group {
+        margin-top: 22px;
+      }
+
+      .micro-label {
         display: block;
-        font-size: 0.84rem;
+        margin-bottom: 8px;
         color: var(--muted);
-        margin-bottom: 6px;
+        font-size: 0.72rem;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
       }
 
       .control {
         width: 100%;
-        padding: 12px 13px;
-        border-radius: 14px;
         border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.84);
+        border-radius: 0;
+        background: #fff;
         color: var(--ink);
-        font: inherit;
+        padding: 12px 14px;
+        outline: none;
+      }
+
+      .control:focus {
+        border-color: var(--ink);
+      }
+
+      .divider {
+        margin: 24px 0;
+        border: 0;
+        border-top: 1px solid var(--line);
+      }
+
+      .section-title {
+        margin: 0 0 12px;
+        font-size: 0.82rem;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--muted);
       }
 
       .chips {
         display: flex;
         flex-wrap: wrap;
-        gap: 10px;
+        gap: 8px;
       }
 
       .chip {
-        border: 1px solid rgba(183, 71, 42, 0.22);
-        background: rgba(255, 255, 255, 0.62);
+        border: 1px solid var(--line);
+        background: #fff;
         color: var(--ink);
+        padding: 8px 10px;
         border-radius: 999px;
-        padding: 10px 12px;
         cursor: pointer;
-        text-align: left;
-        font: inherit;
-        transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+        font-size: 0.9rem;
+        line-height: 1.3;
+        transition:
+          border-color 120ms ease,
+          background-color 120ms ease,
+          color 120ms ease;
       }
 
-      .chip:hover {
-        transform: translateY(-1px);
-        border-color: rgba(183, 71, 42, 0.45);
-        background: rgba(255, 248, 238, 0.95);
+      .chip:hover,
+      .chip:focus-visible {
+        border-color: var(--ink);
+        background: var(--panel-soft);
+        outline: none;
       }
 
-      .chat {
+      .sidebar-footer {
+        margin-top: auto;
+        padding-top: 24px;
+        display: grid;
+        gap: 10px;
+      }
+
+      .session-pill {
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        color: var(--muted);
+        font-size: 0.9rem;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .button {
+        border: 1px solid var(--ink);
+        background: #fff;
+        color: var(--ink);
+        padding: 11px 14px;
+        cursor: pointer;
+        transition:
+          background-color 120ms ease,
+          color 120ms ease,
+          border-color 120ms ease;
+      }
+
+      .button:hover:not(:disabled),
+      .button:focus-visible:not(:disabled) {
+        background: var(--panel-soft);
+        outline: none;
+      }
+
+      .button:disabled {
+        cursor: wait;
+        opacity: 0.7;
+      }
+
+      .button-primary {
+        background: var(--ink);
+        color: #fff;
+      }
+
+      .button-primary:hover:not(:disabled),
+      .button-primary:focus-visible:not(:disabled) {
+        background: #000;
+        color: #fff;
+      }
+
+      .chat-panel {
         display: grid;
         grid-template-rows: auto minmax(0, 1fr) auto;
-        overflow: hidden;
         min-height: 0;
       }
 
-      .chat-head {
-        padding: 24px 26px 18px;
+      .chat-header {
+        padding: 24px 28px 20px;
         border-bottom: 1px solid var(--line);
       }
 
-      .chat-head h2 {
+      .chat-title {
         margin: 0 0 8px;
-        font-size: 1.55rem;
-      }
-
-      .chat-head p {
-        margin: 0;
-        color: var(--muted);
+        font-size: 1.7rem;
+        font-weight: 600;
       }
 
       .messages {
-        padding: 22px 26px;
+        min-height: 0;
         overflow-y: auto;
+        padding: 24px 28px;
         display: flex;
         flex-direction: column;
-        gap: 16px;
-        min-height: 0;
+        gap: 18px;
       }
 
       .message {
-        max-width: 82%;
-        padding: 16px 18px;
-        border-radius: 20px;
-        border: 1px solid var(--line);
-        animation: rise 180ms ease;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        max-width: 78%;
+        animation: message-rise 180ms ease;
       }
 
       .message.user {
         align-self: flex-end;
-        background: var(--user);
-        color: #f7f6f0;
-        border-color: transparent;
       }
 
       .message.assistant {
         align-self: flex-start;
-        background: var(--assistant);
       }
 
       .message.system {
         align-self: center;
-        background: rgba(255, 255, 255, 0.75);
-        color: var(--muted);
-        font-size: 0.92rem;
+        max-width: 720px;
+        width: 100%;
       }
 
-      .message.loading {
-        align-self: flex-start;
-        background: rgba(255, 248, 238, 0.88);
-      }
-
-      .meta {
-        font-size: 0.74rem;
-        letter-spacing: 0.08em;
+      .message-label {
+        font-size: 0.7rem;
+        letter-spacing: 0.16em;
         text-transform: uppercase;
-        margin-bottom: 8px;
-        opacity: 0.76;
+        color: var(--muted);
       }
 
-      .body {
-        white-space: pre-wrap;
+      .message-bubble {
+        border: 1px solid var(--line);
+        padding: 14px 16px;
         line-height: 1.55;
+        white-space: pre-wrap;
+      }
+
+      .message.user .message-bubble {
+        background: var(--user);
+        border-color: var(--user);
+        color: #fff;
+      }
+
+      .message.assistant .message-bubble {
+        background: var(--assistant);
+      }
+
+      .message.system .message-bubble {
+        text-align: center;
+        color: var(--muted);
+        background: #fff;
       }
 
       .citations {
-        margin-top: 14px;
         display: grid;
-        gap: 10px;
+        gap: 8px;
       }
 
       .citation {
-        padding: 12px 13px;
-        border-radius: 14px;
-        background: rgba(255, 255, 255, 0.72);
         border: 1px solid var(--line);
+        background: #fff;
+        color: var(--ink);
+        text-align: left;
+        padding: 12px 14px;
         cursor: pointer;
-        transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+        transition:
+          border-color 120ms ease,
+          background-color 120ms ease;
       }
 
-      .citation:hover {
-        transform: translateY(-1px);
-        border-color: rgba(183, 71, 42, 0.45);
-        background: rgba(255, 251, 246, 0.95);
+      .citation:hover,
+      .citation:focus-visible {
+        border-color: var(--ink);
+        background: var(--panel-soft);
+        outline: none;
       }
 
-      .citation strong {
+      .citation-title {
         display: block;
         margin-bottom: 4px;
+        font-size: 0.95rem;
+        font-weight: 600;
+        line-height: 1.4;
       }
 
-      .citation small {
+      .citation-meta {
         color: var(--muted);
-      }
-
-      .modal-shell {
-        position: fixed;
-        inset: 0;
-        display: none;
-        align-items: center;
-        justify-content: center;
-        padding: 24px;
-        background: rgba(18, 25, 29, 0.55);
-        z-index: 1000;
-      }
-
-      .modal-shell.open {
-        display: flex;
-      }
-
-      .modal {
-        width: min(760px, 100%);
-        max-height: min(82vh, 900px);
-        overflow: auto;
-        background: rgba(255, 252, 245, 0.98);
-        border: 1px solid var(--line);
-        border-radius: 24px;
-        box-shadow: var(--shadow);
-        padding: 22px 22px 18px;
-      }
-
-      .modal-head {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        gap: 16px;
-        margin-bottom: 14px;
-      }
-
-      .modal-head h3 {
-        margin: 0 0 6px;
-        font-size: 1.25rem;
-      }
-
-      .modal-meta {
-        color: var(--muted);
-        font-size: 0.9rem;
-      }
-
-      .modal-close {
-        border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.84);
-        color: var(--ink);
-        border-radius: 999px;
-        padding: 8px 12px;
-        cursor: pointer;
-        font: inherit;
-      }
-
-      .modal-body {
-        white-space: pre-wrap;
-        line-height: 1.65;
-        color: var(--ink);
-      }
-
-      .loading-dots {
-        display: inline-flex;
-        gap: 6px;
-        align-items: center;
-      }
-
-      .loading-dots span {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: var(--accent);
-        opacity: 0.25;
-        animation: pulse 1s infinite ease-in-out;
-      }
-
-      .loading-dots span:nth-child(2) {
-        animation-delay: 0.16s;
-      }
-
-      .loading-dots span:nth-child(3) {
-        animation-delay: 0.32s;
+        font-size: 0.82rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
       }
 
       .composer {
-        padding: 18px 22px 22px;
         border-top: 1px solid var(--line);
-        background: linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(255,248,238,0.9) 55%);
+        padding: 18px 28px 24px;
       }
 
-      .composer-box {
+      .composer-grid {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
         gap: 12px;
+        align-items: end;
       }
 
-      textarea {
-        min-height: 74px;
+      .composer textarea {
+        min-height: 84px;
+        max-height: 220px;
         resize: vertical;
       }
 
-      .send {
-        border: none;
-        border-radius: 18px;
-        padding: 0 18px;
-        min-width: 132px;
-        background: linear-gradient(180deg, #c85835 0%, #9d361e 100%);
-        color: #fff7f1;
-        font: inherit;
-        cursor: pointer;
-        transition: transform 140ms ease, box-shadow 140ms ease;
-        box-shadow: 0 10px 24px rgba(157, 54, 30, 0.28);
+      .ask-button {
+        min-width: 92px;
+        min-height: 48px;
       }
 
-      .send:hover:not(:disabled) {
-        transform: translateY(-1px);
-      }
-
-      .send:disabled {
-        opacity: 0.65;
-        cursor: wait;
-      }
-
+      .modal-shell,
       .auth-shell {
         position: fixed;
         inset: 0;
@@ -362,161 +377,250 @@
         align-items: center;
         justify-content: center;
         padding: 24px;
-        background: rgba(18, 25, 29, 0.58);
-        z-index: 1200;
+        background: var(--overlay);
+        z-index: 1000;
       }
 
+      .modal-shell.open,
       .auth-shell.open {
         display: flex;
       }
 
+      .modal,
       .auth-card {
-        width: min(420px, 100%);
-        background: rgba(255, 252, 245, 0.98);
+        width: min(780px, 100%);
+        max-height: min(84vh, 900px);
+        overflow: auto;
+        background: #fff;
         border: 1px solid var(--line);
-        border-radius: 24px;
-        box-shadow: var(--shadow);
-        padding: 24px;
+        box-shadow: var(--modal-shadow);
+      }
+
+      .auth-card {
+        width: min(430px, 100%);
+        padding: 28px;
+      }
+
+      .modal-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 24px 24px 16px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .modal-head h3 {
+        margin: 0 0 8px;
+        font-size: 1.2rem;
+      }
+
+      .modal-meta {
+        color: var(--muted);
+        font-size: 0.85rem;
+        line-height: 1.5;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .modal-body {
+        padding: 20px 24px 24px;
+        white-space: pre-wrap;
+        line-height: 1.65;
+      }
+
+      .auth-title {
+        margin: 18px 0 8px;
+        font-size: 1.65rem;
+        line-height: 1.15;
+      }
+
+      .auth-fields {
+        display: grid;
+        gap: 12px;
+        margin-top: 20px;
       }
 
       .auth-actions {
         display: grid;
-        gap: 12px;
-        margin-top: 16px;
-      }
-
-      .auth-note,
-      .auth-error,
-      .session-pill {
-        font-size: 0.9rem;
-        color: var(--muted);
+        gap: 10px;
+        margin-top: 18px;
       }
 
       .auth-error {
-        color: #9d361e;
+        min-height: 20px;
+        color: var(--brand);
+        font-size: 0.92rem;
       }
 
-      .session-pill {
-        padding: 10px 12px;
-        border: 1px solid var(--line);
-        border-radius: 14px;
-        background: rgba(255, 255, 255, 0.74);
+      .loading-dots {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        vertical-align: middle;
       }
 
-      @keyframes rise {
+      .loading-dots span {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--ink);
+        opacity: 0.22;
+        animation: pulse 1s ease-in-out infinite;
+      }
+
+      .loading-dots span:nth-child(2) {
+        animation-delay: 0.14s;
+      }
+
+      .loading-dots span:nth-child(3) {
+        animation-delay: 0.28s;
+      }
+
+      @keyframes pulse {
+        0%,
+        80%,
+        100% {
+          opacity: 0.22;
+          transform: translateY(0);
+        }
+
+        40% {
+          opacity: 1;
+          transform: translateY(-2px);
+        }
+      }
+
+      @keyframes message-rise {
         from {
           opacity: 0;
           transform: translateY(8px);
         }
+
         to {
           opacity: 1;
           transform: translateY(0);
         }
       }
 
-      @keyframes pulse {
-        0%, 80%, 100% {
-          opacity: 0.25;
-          transform: scale(0.9);
-        }
-        40% {
-          opacity: 1;
-          transform: scale(1);
-        }
-      }
-
-      @media (max-width: 960px) {
-        body {
-          height: auto;
-          overflow: auto;
-        }
-
-        .shell {
-          height: auto;
-        }
-
-        .frame {
+      @media (max-width: 980px) {
+        .layout {
           grid-template-columns: 1fr;
-          height: auto;
-          overflow: visible;
+        }
+
+        .sidebar {
+          gap: 0;
         }
 
         .message {
           max-width: 100%;
         }
+      }
 
-        .composer-box {
+      @media (max-width: 720px) {
+        .app-shell {
+          padding: 12px;
+        }
+
+        .layout {
+          gap: 12px;
+          min-height: calc(100vh - 24px);
+        }
+
+        .chat-header,
+        .messages,
+        .composer,
+        .sidebar {
+          padding-left: 16px;
+          padding-right: 16px;
+        }
+
+        .composer-grid {
           grid-template-columns: 1fr;
         }
 
-        .send {
-          min-height: 52px;
+        .ask-button {
+          width: 100%;
+        }
+
+        .modal-shell,
+        .auth-shell {
+          padding: 16px;
         }
       }
     </style>
   </head>
   <body>
-    <div class="shell">
-      <div class="frame">
+    <div class="app-shell">
+      <div class="layout">
         <aside class="panel sidebar">
-          <div>
-            <div class="eyebrow">TOI E-Paper RAG</div>
-            <h1 class="title">Ask the feed like a newsroom analyst.</h1>
-            <p class="subtitle">
-              Hybrid retrieval over structured edition metadata plus semantic article content.
-            </p>
+          <div class="brand">
+            <span class="brand-mark" aria-hidden="true"></span>
+            <p class="brand-label">Times of India</p>
           </div>
 
-          <div>
-            <label class="label" for="editionFilter">Edition Filter</label>
+          <h1 class="sidebar-title">E-Paper Assistant</h1>
+          <p class="sidebar-subtitle">
+            Internal archive search across editions, sections, and cited article content.
+          </p>
+
+          <div class="control-group">
+            <label class="micro-label" for="editionFilter">Edition</label>
             <select class="control" id="editionFilter">
               <option value="">All editions</option>
             </select>
           </div>
 
-          <div>
-            <label class="label" for="sectionFilter">Section Filter</label>
+          <div class="control-group">
+            <label class="micro-label" for="sectionFilter">Section</label>
             <select class="control" id="sectionFilter">
               <option value="">All sections</option>
             </select>
           </div>
 
-          <div>
-            <div class="label">Prompt Starters</div>
-            <div class="chips">
-              <button class="chip" data-prompt="Show me all articles published in the Delhi edition on March 11">Delhi edition on March 11</button>
-              <button class="chip" data-prompt="List all articles from the Sports section">Sports section</button>
-              <button class="chip" data-prompt="Find articles related to the Iran war">Iran war</button>
-              <button class="chip" data-prompt="Find articles about the Iran conflict published in the Mumbai edition">Iran conflict in Mumbai</button>
-              <button class="chip" data-prompt="Show me opinion pieces from the Editorial section that discuss geopolitical tensions">Editorial geopolitical tensions</button>
-            </div>
-          </div>
+          <hr class="divider" />
 
-          <div class="session-pill" id="sessionInfo">Checking session...</div>
-          <button class="chip" id="logoutButton" type="button">Log out</button>
+          <section>
+            <h2 class="section-title">Try asking</h2>
+            <div class="chips">
+              <button class="chip" data-prompt="Give me all articles from the front page of the Noida edition" type="button">Noida front page</button>
+              <button class="chip" data-prompt="How many articles about Modi and in which context they are" type="button">Modi coverage</button>
+              <button class="chip" data-prompt="Show me all sports stories from the Delhi edition on March 11" type="button">Delhi sports</button>
+              <button class="chip" data-prompt="What were the main stories on the Mumbai edition front page" type="button">Mumbai front page</button>
+              <button class="chip" data-prompt="Give me one article from the above conversation" type="button">One article follow-up</button>
+            </div>
+          </section>
+
+          <div class="sidebar-footer">
+            <div class="session-pill" id="sessionInfo">Checking session...</div>
+            <button class="button" id="logoutButton" type="button">Logout</button>
+          </div>
         </aside>
 
-        <main class="panel chat">
-          <div class="chat-head">
-            <div class="eyebrow">Chat Assistant</div>
-            <h2>Question answering with citations</h2>
-            <p>Ask about editions, sections, political stories, sports coverage, or topic-specific events.</p>
-          </div>
+        <main class="panel chat-panel">
+          <header class="chat-header">
+            <h2 class="chat-title">Ask the archive</h2>
+            <p class="header-subtitle">
+              Ask edition-specific questions, request context, and open supporting references inline.
+            </p>
+          </header>
 
           <div class="messages" id="messages">
             <div class="message system">
-              <div class="body">Ask a question to test SQL, semantic, or hybrid retrieval. The assistant will answer and attach supporting articles.</div>
+              <div class="message-bubble">
+                Ask a question about the archive. Answers include citations when supporting articles are available.
+              </div>
             </div>
           </div>
 
           <div class="composer">
-            <div class="composer-box">
+            <div class="composer-grid">
               <textarea
                 id="question"
                 class="control"
-                placeholder="Ask something like: Which Sports section articles covered India winning the World Cup?"
+                placeholder="Ask about an edition, section, front page, person, or follow-up from the current chat."
               ></textarea>
-              <button id="send" class="send">Ask</button>
+              <button id="send" class="button button-primary ask-button" type="button">Ask</button>
             </div>
           </div>
         </main>
@@ -524,34 +628,43 @@
     </div>
 
     <div class="modal-shell" id="referenceModal" aria-hidden="true">
-      <div class="modal">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
         <div class="modal-head">
           <div>
             <h3 id="modalTitle">Reference</h3>
             <div class="modal-meta" id="modalMeta"></div>
           </div>
-          <button class="modal-close" id="modalClose" type="button">Close</button>
+          <button class="button" id="modalClose" type="button">Close</button>
         </div>
         <div class="modal-body" id="modalBody"></div>
       </div>
     </div>
 
-    <div class="auth-shell" id="authGate">
-      <div class="auth-card">
-        <div class="eyebrow">Secure Access</div>
-        <h2 class="title" style="font-size: 1.8rem;">Sign in to the archive</h2>
-        <p class="subtitle">Use your email and password. If the email does not exist yet, the app will create the account and start a 7-day session.</p>
-        <div style="margin-top: 16px;">
-          <label class="label" for="authEmail">Email</label>
-          <input class="control" id="authEmail" type="email" autocomplete="email" />
+    <div class="auth-shell" id="authGate" aria-hidden="true">
+      <div class="auth-card" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <p class="brand-label">Times of India</p>
         </div>
-        <div style="margin-top: 12px;">
-          <label class="label" for="authPassword">Password</label>
-          <input class="control" id="authPassword" type="password" autocomplete="current-password" />
+        <h2 class="auth-title" id="authTitle">Sign in to the E-Paper Assistant</h2>
+        <p class="modal-note">
+          Restricted internal demo access. Sign in with your email and password to continue.
+        </p>
+
+        <div class="auth-fields">
+          <div>
+            <label class="micro-label" for="authEmail">Email</label>
+            <input class="control" id="authEmail" type="email" autocomplete="email" />
+          </div>
+          <div>
+            <label class="micro-label" for="authPassword">Password</label>
+            <input class="control" id="authPassword" type="password" autocomplete="current-password" />
+          </div>
         </div>
+
         <div class="auth-actions">
-          <button class="send" id="loginButton" type="button">Continue</button>
-          <div class="auth-note">Session duration: 7 days</div>
+          <button class="button button-primary" id="loginButton" type="button">Sign in</button>
+          <p class="modal-note">Demo sessions remain active for seven days.</p>
           <div class="auth-error" id="authError"></div>
         </div>
       </div>
@@ -575,23 +688,47 @@
       const loginButton = document.getElementById("loginButton");
       const logoutButton = document.getElementById("logoutButton");
       const sessionInfo = document.getElementById("sessionInfo");
+      const chips = document.querySelectorAll(".chip");
       const conversationHistory = [];
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }
+
+      function scrollMessagesToBottom() {
+        messages.scrollTop = messages.scrollHeight;
+      }
+
+      function messageLabel(role) {
+        if (role === "user") {
+          return "You";
+        }
+        if (role === "assistant") {
+          return "Assistant";
+        }
+        return "System";
+      }
 
       function addMessage(role, content, citations = []) {
         const node = document.createElement("div");
         node.className = `message ${role}`;
 
         if (role !== "system") {
-          const meta = document.createElement("div");
-          meta.className = "meta";
-          meta.textContent = role === "user" ? "You" : "Assistant";
-          node.appendChild(meta);
+          const label = document.createElement("div");
+          label.className = "message-label";
+          label.textContent = messageLabel(role);
+          node.appendChild(label);
         }
 
-        const body = document.createElement("div");
-        body.className = "body";
-        body.textContent = content;
-        node.appendChild(body);
+        const bubble = document.createElement("div");
+        bubble.className = "message-bubble";
+        bubble.textContent = content;
+        node.appendChild(bubble);
 
         if (citations.length) {
           const citationWrap = document.createElement("div");
@@ -601,8 +738,8 @@
             card.type = "button";
             card.className = "citation";
             card.innerHTML = `
-              <strong>${escapeHtml(citation.headline || "Untitled")}</strong>
-              <small>${escapeHtml(citation.edition || "Unknown edition")} • ${escapeHtml(citation.section || "Unknown section")}</small>
+              <span class="citation-title">${escapeHtml(citation.headline || "Untitled")}</span>
+              <span class="citation-meta">${escapeHtml(citation.edition || "Unknown edition")} • ${escapeHtml(citation.section || "Unknown section")}</span>
             `;
             card.addEventListener("click", () => openReference(citation));
             citationWrap.appendChild(card);
@@ -611,36 +748,27 @@
         }
 
         messages.appendChild(node);
-        messages.scrollTop = messages.scrollHeight;
+        scrollMessagesToBottom();
         return node;
       }
 
       function addLoadingMessage() {
         const node = document.createElement("div");
-        node.className = "message assistant loading";
+        node.className = "message assistant";
 
-        const meta = document.createElement("div");
-        meta.className = "meta";
-        meta.textContent = "Assistant";
-        node.appendChild(meta);
+        const label = document.createElement("div");
+        label.className = "message-label";
+        label.textContent = "Assistant";
+        node.appendChild(label);
 
-        const body = document.createElement("div");
-        body.className = "body";
-        body.innerHTML = `Searching the archive <span class="loading-dots"><span></span><span></span><span></span></span>`;
-        node.appendChild(body);
+        const bubble = document.createElement("div");
+        bubble.className = "message-bubble";
+        bubble.innerHTML = `Searching the archive <span class="loading-dots"><span></span><span></span><span></span></span>`;
+        node.appendChild(bubble);
 
         messages.appendChild(node);
-        messages.scrollTop = messages.scrollHeight;
+        scrollMessagesToBottom();
         return node;
-      }
-
-      function escapeHtml(value) {
-        return String(value)
-          .replaceAll("&", "&amp;")
-          .replaceAll("<", "&lt;")
-          .replaceAll(">", "&gt;")
-          .replaceAll('"', "&quot;")
-          .replaceAll("'", "&#39;");
       }
 
       function openReference(citation) {
@@ -661,9 +789,22 @@
         referenceModal.setAttribute("aria-hidden", "true");
       }
 
+      function openAuthGate() {
+        authGate.classList.add("open");
+        authGate.setAttribute("aria-hidden", "false");
+      }
+
+      function closeAuthGate() {
+        authGate.classList.remove("open");
+        authGate.setAttribute("aria-hidden", "true");
+        authError.textContent = "";
+      }
+
       async function askQuestion() {
         const question = questionInput.value.trim();
-        if (!question) return;
+        if (!question) {
+          return;
+        }
 
         addMessage("user", question);
         conversationHistory.push({ role: "user", content: question });
@@ -708,33 +849,6 @@
         }
       }
 
-      sendButton.addEventListener("click", askQuestion);
-      questionInput.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" && !event.shiftKey) {
-          event.preventDefault();
-          askQuestion();
-        }
-      });
-
-      document.querySelectorAll(".chip").forEach((chip) => {
-        chip.addEventListener("click", () => {
-          questionInput.value = chip.dataset.prompt || "";
-          questionInput.focus();
-        });
-      });
-
-      modalClose.addEventListener("click", closeReference);
-      referenceModal.addEventListener("click", (event) => {
-        if (event.target === referenceModal) {
-          closeReference();
-        }
-      });
-      document.addEventListener("keydown", (event) => {
-        if (event.key === "Escape" && referenceModal.classList.contains("open")) {
-          closeReference();
-        }
-      });
-
       async function loadCatalog() {
         try {
           const [editionsResponse, sectionsResponse] = await Promise.all([
@@ -766,15 +880,6 @@
         } catch (error) {
           addMessage("system", `Filter catalog failed to load: ${error.message}`);
         }
-      }
-
-      function openAuthGate() {
-        authGate.classList.add("open");
-      }
-
-      function closeAuthGate() {
-        authGate.classList.remove("open");
-        authError.textContent = "";
       }
 
       async function checkAuth() {
@@ -824,13 +929,56 @@
         openAuthGate();
       }
 
+      sendButton.addEventListener("click", askQuestion);
+
+      questionInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          askQuestion();
+        }
+      });
+
+      chips.forEach((chip) => {
+        chip.addEventListener("click", () => {
+          questionInput.value = chip.dataset.prompt || "";
+          questionInput.focus();
+        });
+      });
+
+      modalClose.addEventListener("click", closeReference);
+      referenceModal.addEventListener("click", (event) => {
+        if (event.target === referenceModal) {
+          closeReference();
+        }
+      });
+
+      authGate.addEventListener("click", (event) => {
+        if (event.target === authGate) {
+          closeAuthGate();
+        }
+      });
+
+      document.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") {
+          return;
+        }
+        if (referenceModal.classList.contains("open")) {
+          closeReference();
+        }
+        if (authGate.classList.contains("open")) {
+          closeAuthGate();
+        }
+      });
+
       loginButton.addEventListener("click", login);
+
       authPassword.addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
           event.preventDefault();
           login();
         }
       });
+
       logoutButton.addEventListener("click", logout);
 
       checkAuth();
