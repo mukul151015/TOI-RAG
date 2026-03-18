@@ -711,6 +711,16 @@
         return headers;
       }
 
+      function messageLabel(role) {
+        if (role === "user") {
+          return "You";
+        }
+        if (role === "assistant") {
+          return "Assistant";
+        }
+        return "System";
+      }
+
       function addMessage(role, content, citations = []) {
         const node = document.createElement("div");
         node.className = `message ${role}`;
