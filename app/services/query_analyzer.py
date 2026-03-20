@@ -89,10 +89,6 @@ PERSON_ALIAS_MAP = {
         "canonical": "Narendra Modi",
         "terms": ["narendra modi", "pm modi", "prime minister modi", "modi"],
     },
-    "rahul gandhi": {
-        "canonical": "Rahul Gandhi",
-        "terms": ["rahul gandhi"],
-    },
 }
 
 
@@ -171,8 +167,8 @@ def analyze_query(query: str, issue_date: str | None = None) -> QueryAnalysis:
         author=author,
         semantic_query=semantic_query,
     )
-    places = _extract_places(lowered, edition)
-    organizations = _extract_organizations(lowered)
+    places = _extract_places(query, lowered, edition)
+    organizations = _extract_organizations(query, lowered)
     people = _extract_people(query, author)
 
     # LLM-based entity enrichment (runs only when flag is enabled).
@@ -388,11 +384,15 @@ def _should_extract_edition(text: str) -> bool:
         r"\bfrom the\b.*\bedition\b",
         r"\bin the\b.*\bedition\b",
         r"\barticles? in\b.*\bedition\b",
-        # city-name patterns that imply edition filtering even without "edition" keyword
-        r"\b(mumbai|delhi|kolkata|chennai|bangalore|bengaluru|hyderabad|lucknow|nagpur|ludhiana|agra|bareilly|dehradun)\b.*(front page|frontpage|section|articles?|stories|news)",
-        r"(front page|frontpage).*(mumbai|delhi|kolkata|chennai|bangalore|bengaluru|hyderabad|lucknow|nagpur|ludhiana)",
     ]
-    return any(re.search(pattern, text) for pattern in patterns)
+    if any(re.search(pattern, text) for pattern in patterns):
+        return True
+    publication_tokens: set[str] = set()
+    for alias in _build_publication_alias_map():
+        publication_tokens.update(token for token in re.findall(r"[a-z0-9]+", alias) if len(token) >= 4)
+    text_tokens = set(re.findall(r"[a-z0-9]+", text))
+    context_tokens = {"front", "page", "frontpage", "section", "articles", "stories", "news", "edition", "published", "from", "in"}
+    return bool(text_tokens.intersection(context_tokens) and text_tokens.intersection(publication_tokens))
 
 
 def _extract_section(text: str) -> str | None:
@@ -593,8 +593,8 @@ def _extract_people(query: str, author: str | None) -> list[str]:
 def expand_person_alias_terms(name: str) -> list[str]:
     alias = PERSON_ALIAS_MAP.get(name.lower())
     if not alias:
-        return [name]
-    return list(alias["terms"])
+        return _generic_person_alias_terms(name)
+    return dedupe_preserve_order([*alias["terms"], *_generic_person_alias_terms(name)])
 
 
 def canonical_person_name(name: str) -> str:
@@ -608,24 +608,158 @@ def _canonicalize_person(name: str) -> str:
     return canonical_person_name(name.strip())
 
 
-def _extract_places(text: str, edition: str | None) -> list[str]:
+def dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(value)
+    return deduped
+
+
+def _generic_person_alias_terms(name: str) -> list[str]:
+    cleaned = " ".join(part for part in re.split(r"\s+", name.strip()) if part)
+    if not cleaned:
+        return []
+    variants = [cleaned]
+    parts = cleaned.split()
+    surname = parts[-1]
+    variants.append(surname)
+    variants.extend(_surname_variants(surname))
+    if len(parts) >= 2:
+        first_name = parts[0]
+        variants.append(f"{first_name} {surname}")
+        for surname_variant in _surname_variants(surname):
+            variants.append(f"{first_name} {surname_variant}")
+    return dedupe_preserve_order([variant for variant in variants if variant])
+
+
+def _surname_variants(surname: str) -> list[str]:
+    lowered = surname.lower()
+    variants: list[str] = []
+    if lowered.endswith("iya") and len(surname) > 4:
+        variants.append(f"{surname[:-3]}ia")
+    if lowered.endswith("ia") and len(surname) > 3:
+        variants.append(f"{surname[:-2]}iya")
+    if lowered.endswith("y") and len(surname) > 3:
+        variants.append(f"{surname[:-1]}ia")
+    return dedupe_preserve_order(variants)
+
+
+def _extract_places(raw_query: str, text: str, edition: str | None) -> list[str]:
     places: list[str] = []
     if edition:
         core_name = _edition_core_name(edition).lower()
         if core_name and core_name not in places:
             places.append(core_name)
+    places.extend(_generic_location_candidates(raw_query, text))
     for place in KNOWN_PLACES:
         if re.search(rf"\b{re.escape(place)}\b", text) and place not in places:
             places.append(place)
-    return places
+    return dedupe_preserve_order(places)
 
 
-def _extract_organizations(text: str) -> list[str]:
-    organizations: list[str] = []
+def _extract_organizations(raw_query: str, text: str) -> list[str]:
+    organizations: list[str] = _generic_organization_candidates(raw_query)
     for org in KNOWN_ORGANIZATIONS:
         if re.search(rf"\b{re.escape(org)}\b", text) and org not in organizations:
             organizations.append(org)
-    return organizations
+    return dedupe_preserve_order(organizations)
+
+
+def _generic_location_candidates(raw_query: str, text: str) -> list[str]:
+    candidates: list[str] = []
+    stop = {
+        "there",
+        "any",
+        "news",
+        "articles",
+        "article",
+        "stories",
+        "story",
+        "coverage",
+        "context",
+        "section",
+        "edition",
+        "front",
+        "page",
+        "war",
+        "budget",
+        "world",
+    }
+    trailing_topic_words = {
+        "flood",
+        "flooding",
+        "war",
+        "conflict",
+        "budget",
+        "coverage",
+        "story",
+        "stories",
+        "article",
+        "articles",
+        "news",
+    }
+    patterns = [
+        r"\b(?:in|from|at|around|near|about)\s+([a-z][a-z]+(?:\s+[a-z][a-z]+)?)\b",
+        r"\b([a-z][a-z]+(?:\s+[a-z][a-z]+)?)\s+(?:news|edition|coverage|stories|articles)\b",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, text):
+            candidate = _normalize_location_candidate(match.group(1).strip(), stop, trailing_topic_words)
+            if candidate:
+                candidates.append(candidate)
+    for candidate in re.findall(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b", raw_query):
+        lowered = candidate.lower()
+        if lowered not in stop and not _looks_like_person_phrase(candidate):
+            candidates.append(lowered)
+    return dedupe_preserve_order(candidates)
+
+
+def _normalize_location_candidate(candidate: str, stop: set[str], trailing_topic_words: set[str]) -> str | None:
+    parts = [part for part in candidate.split() if part]
+    if not parts:
+        return None
+    if any(part in stop for part in parts):
+        return None
+    if len(parts) == 2 and parts[1] in trailing_topic_words:
+        return parts[0]
+    return " ".join(parts)
+
+
+def _generic_organization_candidates(raw_query: str) -> list[str]:
+    candidates: list[str] = []
+    for acronym in re.findall(r"\b[A-Z]{2,8}\b", raw_query):
+        candidates.append(acronym.lower())
+    org_suffixes = (
+        "Party",
+        "Court",
+        "Government",
+        "Govt",
+        "University",
+        "Corporation",
+        "Corp",
+        "Ltd",
+        "Limited",
+        "Commission",
+        "Committee",
+        "Bank",
+        "Ministry",
+    )
+    pattern = r"\b([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3}\s+(?:" + "|".join(org_suffixes) + r"))\b"
+    for candidate in re.findall(pattern, raw_query):
+        candidates.append(candidate.lower())
+    return dedupe_preserve_order(candidates)
+
+
+def _looks_like_person_phrase(value: str) -> bool:
+    tokens = [token for token in value.split() if token]
+    if not tokens:
+        return False
+    return len(tokens) <= 3 and all(token[:1].isupper() for token in tokens)
 
 
 def _resolve_entity_roles(

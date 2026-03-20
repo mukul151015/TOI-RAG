@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     reranking_enabled: bool = False  # requires sentence_transformers package; set True to enable
     reranker_top_k: int = 30
     low_confidence_threshold: float = 0.40
+    rag_v3_enabled: bool = True
 
     default_org_id: str = "toi"
     default_feed_url: str = (

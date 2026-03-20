@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from app.api.routes import router
 from app.core.config import get_settings
 from app.db.database import close_pool, ensure_runtime_schema, ensure_schema, open_pool
+from app.services.openai_client import close_openai_client
 
 
 settings = get_settings()
@@ -34,6 +35,8 @@ async def lifespan(_: FastAPI):
     yield
     logger.info("App shutdown: closing database pool")
     close_pool()
+    logger.info("App shutdown: closing OpenAI client")
+    close_openai_client()
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)

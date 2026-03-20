@@ -11,6 +11,7 @@ from app.schemas import (
     LoginRequest,
     QueryRequest,
 )
+from app.core.config import get_settings
 from app.services.auth_service import (
     fetch_recent_chat_traces,
     get_authenticated_session,
@@ -21,15 +22,16 @@ from app.services.auth_service import (
     require_authenticated_user,
     update_session_context,
 )
-from app.services.chat_service import answer_question
+from app.services.dynamic_rag_v3_service import answer_question as answer_question_v3
+from app.services.dynamic_rag_v3_service import execute_query as execute_query_v3
 from app.services.embedding_backfill import backfill_embeddings, get_embedding_status
 from app.services.ingestion import ingest_feed
-from app.services.query_service import run_query
 from app.services.repository import fetch_publication_catalog, fetch_section_catalog
 
 
 router = APIRouter()
 UI_PATH = Path(__file__).resolve().parents[1] / "ui" / "index.html"
+_settings = get_settings()
 
 
 @router.get("/", include_in_schema=False)
@@ -94,7 +96,7 @@ def embeddings_status_route(request: Request):
 @router.post("/query")
 def query_route(payload: QueryRequest, request: Request):
     require_authenticated_user(request)
-    return run_query(payload.query, payload.issue_date, payload.limit)
+    return execute_query_v3(payload.query, payload.issue_date, payload.limit)
 
 
 @router.post("/chat")
@@ -102,7 +104,7 @@ def chat_route(payload: ChatRequest, request: Request):
     session = get_authenticated_session(request)
     if not session:
         require_authenticated_user(request)
-    result = answer_question(
+    result = answer_question_v3(
         payload.question,
         payload.issue_date,
         payload.limit,

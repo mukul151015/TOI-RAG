@@ -1,3 +1,4 @@
+import atexit
 import logging
 import time
 from functools import lru_cache
@@ -16,6 +17,9 @@ logger = logging.getLogger(__name__)
 # Max 1000 entries; TTL is effectively the process lifetime (news data is
 # per-issue so content doesn't change within a single run).
 _EMBED_CACHE_MAX = 1000
+_CHAT_CACHE_MAX = 512
+_http_client: httpx.Client | None = None
+_client: OpenAI | None = None
 
 
 def _build_http_client() -> httpx.Client:
@@ -25,7 +29,25 @@ def _build_http_client() -> httpx.Client:
     return httpx.Client(verify=verify, timeout=60.0)
 
 
-client = OpenAI(api_key=settings.openai_api_key, http_client=_build_http_client())
+def get_client() -> OpenAI:
+    global _client, _http_client
+    if _client is None:
+        _http_client = _build_http_client()
+        _client = OpenAI(api_key=settings.openai_api_key, http_client=_http_client)
+    return _client
+
+
+def close_openai_client() -> None:
+    global _client, _http_client
+    try:
+        if _http_client is not None:
+            _http_client.close()
+    finally:
+        _client = None
+        _http_client = None
+
+
+atexit.register(close_openai_client)
 
 
 @lru_cache(maxsize=_EMBED_CACHE_MAX)
@@ -34,7 +56,7 @@ def _embed_texts_cached(model: str, dimensions: int, texts_tuple: tuple[str, ...
     last_error: Exception | None = None
     for attempt in range(1, settings.openai_max_retries + 1):
         try:
-            response = client.embeddings.create(
+            response = get_client().embeddings.create(
                 model=model,
                 input=list(texts_tuple),
                 dimensions=dimensions,
@@ -83,8 +105,18 @@ def chat_completion(
     pass a shorter value so a single slow request doesn't stall the pipeline.
     """
     chosen_model = model or settings.openai_chat_model
-    response = client.responses.create(
-        model=chosen_model,
+    return _chat_completion_cached(chosen_model, system_prompt, user_prompt, timeout)
+
+
+@lru_cache(maxsize=_CHAT_CACHE_MAX)
+def _chat_completion_cached(
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    timeout: float,
+) -> str:
+    response = get_client().responses.create(
+        model=model,
         input=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},

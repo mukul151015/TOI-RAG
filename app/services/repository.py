@@ -1,6 +1,7 @@
 import json
 from datetime import date
 from functools import lru_cache
+import re
 from typing import Any
 
 from app.db.database import get_cursor
@@ -9,6 +10,22 @@ from app.db.database import get_cursor
 _publication_catalog_fallback: list[dict[str, Any]] = []
 _section_catalog_fallback: list[str] = []
 _author_catalog_fallback: list[str] = []
+
+
+def _is_plausible_author_name(value: str | None) -> bool:
+    name = str(value or "").strip()
+    if not name:
+        return False
+    if len(name) > 80:
+        return False
+    if name.startswith(("–", "—", "-")):
+        return False
+    if re.search(r"\d", name):
+        return False
+    alpha_tokens = re.findall(r"[A-Za-z]+", name)
+    if len(alpha_tokens) >= 2:
+        return True
+    return bool(re.fullmatch(r"[A-Z]{2,6}", name))
 
 
 def _ensure_organization(cur, org_id: str) -> None:
@@ -820,7 +837,7 @@ def fetch_author_catalog() -> list[str]:
                 order by display_name
                 """
             )
-            rows = [row["display_name"] for row in cur.fetchall()]
+            rows = [row["display_name"] for row in cur.fetchall() if _is_plausible_author_name(row["display_name"])]
             _author_catalog_fallback = rows
             return rows
     except Exception:
@@ -828,6 +845,10 @@ def fetch_author_catalog() -> list[str]:
 
 
 def fetch_sql_articles(issue_date: str | None, edition: str | None, section: str | None, limit: int):
+    return fetch_sql_articles_in_range(issue_date, issue_date, edition, section, limit)
+
+
+def fetch_sql_articles_in_range(start_date: str | None, end_date: str | None, edition: str | None, section: str | None, limit: int):
     with get_cursor() as cur:
         cur.execute(
             """
@@ -845,7 +866,8 @@ def fetch_sql_articles(issue_date: str | None, edition: str | None, section: str
             join issues i on i.id = pi.issue_id
             left join sections s on s.id = a.section_id
             left join article_bodies ab on ab.article_id = a.id
-            where (%s::date is null or i.issue_date = %s::date)
+            where (%s::date is null or i.issue_date >= %s::date)
+              and (%s::date is null or i.issue_date <= %s::date)
               and (%s::text is null or p.publication_name ilike '%%' || %s::text || '%%')
               and (%s::text is null or s.normalized_section ilike '%%' || %s::text || '%%')
               and coalesce(nullif(a.headline, ''), nullif(ab.cleaned_text, '')) is not null
@@ -857,12 +879,16 @@ def fetch_sql_articles(issue_date: str | None, edition: str | None, section: str
             order by i.issue_date desc, a.id desc
             limit %s
             """,
-            (issue_date, issue_date, edition, edition, section, section, section, limit),
+            (start_date, start_date, end_date, end_date, edition, edition, section, section, section, limit),
         )
         return cur.fetchall()
 
 
 def fetch_sql_article_count(issue_date: str | None, edition: str | None, section: str | None) -> int:
+    return fetch_sql_article_count_in_range(issue_date, issue_date, edition, section)
+
+
+def fetch_sql_article_count_in_range(start_date: str | None, end_date: str | None, edition: str | None, section: str | None) -> int:
     with get_cursor() as cur:
         cur.execute(
             """
@@ -872,17 +898,30 @@ def fetch_sql_article_count(issue_date: str | None, edition: str | None, section
             join publications p on p.id = pi.publication_id
             join issues i on i.id = pi.issue_id
             left join sections s on s.id = a.section_id
-            where (%s::date is null or i.issue_date = %s::date)
+            where (%s::date is null or i.issue_date >= %s::date)
+              and (%s::date is null or i.issue_date <= %s::date)
               and (%s::text is null or p.publication_name ilike '%%' || %s::text || '%%')
               and (%s::text is null or s.normalized_section ilike '%%' || %s::text || '%%')
             """,
-            (issue_date, issue_date, edition, edition, section, section),
+            (start_date, start_date, end_date, end_date, edition, edition, section, section),
         )
         return int(cur.fetchone()["article_count"])
 
 
 def fetch_author_articles(
     issue_date: str | None,
+    author: str,
+    limit: int,
+    *,
+    edition: str | None = None,
+    section: str | None = None,
+):
+    return fetch_author_articles_in_range(issue_date, issue_date, author, limit, edition=edition, section=section)
+
+
+def fetch_author_articles_in_range(
+    start_date: str | None,
+    end_date: str | None,
     author: str,
     limit: int,
     *,
@@ -909,20 +948,32 @@ def fetch_author_articles(
             join authors au on au.id = aa.author_id
             left join sections s on s.id = a.section_id
             left join article_bodies ab on ab.article_id = a.id
-            where (%s::date is null or i.issue_date = %s::date)
+            where (%s::date is null or i.issue_date >= %s::date)
+              and (%s::date is null or i.issue_date <= %s::date)
               and (%s::text is null or p.publication_name ilike '%%' || %s::text || '%%')
               and (%s::text is null or s.normalized_section ilike '%%' || %s::text || '%%')
               and lower(au.display_name) = lower(%s)
             order by i.issue_date desc, a.id desc
             limit %s
             """,
-            (issue_date, issue_date, edition, edition, section, section, author, limit),
+            (start_date, start_date, end_date, end_date, edition, edition, section, section, author, limit),
         )
         return cur.fetchall()
 
 
 def fetch_author_article_count(
     issue_date: str | None,
+    author: str,
+    *,
+    edition: str | None = None,
+    section: str | None = None,
+) -> int:
+    return fetch_author_article_count_in_range(issue_date, issue_date, author, edition=edition, section=section)
+
+
+def fetch_author_article_count_in_range(
+    start_date: str | None,
+    end_date: str | None,
     author: str,
     *,
     edition: str | None = None,
@@ -939,18 +990,66 @@ def fetch_author_article_count(
             join article_authors aa on aa.article_id = a.id
             join authors au on au.id = aa.author_id
             left join sections s on s.id = a.section_id
-            where (%s::date is null or i.issue_date = %s::date)
+            where (%s::date is null or i.issue_date >= %s::date)
+              and (%s::date is null or i.issue_date <= %s::date)
               and (%s::text is null or p.publication_name ilike '%%' || %s::text || '%%')
               and (%s::text is null or s.normalized_section ilike '%%' || %s::text || '%%')
               and lower(au.display_name) = lower(%s)
             """,
-            (issue_date, issue_date, edition, edition, section, section, author),
+            (start_date, start_date, end_date, end_date, edition, edition, section, section, author),
         )
         return int(cur.fetchone()["article_count"])
 
 
+def fetch_author_counts(issue_date: str | None):
+    return fetch_author_counts_in_range(issue_date, issue_date)
+
+
+def fetch_author_counts_in_range(start_date: str | None, end_date: str | None):
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            select
+              au.display_name as author,
+              count(*) as article_count
+            from articles a
+            join publication_issues pi on pi.id = a.publication_issue_id
+            join issues i on i.id = pi.issue_id
+            join article_authors aa on aa.article_id = a.id
+            join authors au on au.id = aa.author_id
+            where (%s::date is null or i.issue_date >= %s::date)
+              and (%s::date is null or i.issue_date <= %s::date)
+            group by au.display_name
+            order by article_count desc, au.display_name asc
+            """,
+            (start_date, start_date, end_date, end_date),
+        )
+        return [row for row in cur.fetchall() if _is_plausible_author_name(row.get("author"))]
+
+
 def fetch_entity_mention_articles(
     issue_date: str | None,
+    entity_terms: list[str],
+    limit: int,
+    *,
+    edition: str | None = None,
+    section: str | None = None,
+    headline_priority_only: bool = False,
+):
+    return fetch_entity_mention_articles_in_range(
+        issue_date,
+        issue_date,
+        entity_terms,
+        limit,
+        edition=edition,
+        section=section,
+        headline_priority_only=headline_priority_only,
+    )
+
+
+def fetch_entity_mention_articles_in_range(
+    start_date: str | None,
+    end_date: str | None,
     entity_terms: list[str],
     limit: int,
     *,
@@ -988,7 +1087,8 @@ def fetch_entity_mention_articles(
               left join sections s on s.id = a.section_id
               left join article_bodies ab on ab.article_id = a.id
               cross join unnest(%s::text[]) term
-              where (%s::date is null or i.issue_date = %s::date)
+              where (%s::date is null or i.issue_date >= %s::date)
+                and (%s::date is null or i.issue_date <= %s::date)
                 and (%s::text is null or p.publication_name ilike '%%' || %s::text || '%%')
                 and (%s::text is null or s.normalized_section ilike '%%' || %s::text || '%%')
                 and lower(
@@ -1016,13 +1116,44 @@ def fetch_entity_mention_articles(
             order by mention_score desc, issue_date desc, id desc
             limit %s
             """,
-            (normalized_terms, issue_date, issue_date, edition, edition, section, section, headline_priority_only, limit),
+            (
+                normalized_terms,
+                start_date,
+                start_date,
+                end_date,
+                end_date,
+                edition,
+                edition,
+                section,
+                section,
+                headline_priority_only,
+                limit,
+            ),
         )
         return cur.fetchall()
 
 
 def fetch_entity_mention_count(
     issue_date: str | None,
+    entity_terms: list[str],
+    *,
+    edition: str | None = None,
+    section: str | None = None,
+    headline_priority_only: bool = False,
+) -> int:
+    return fetch_entity_mention_count_in_range(
+        issue_date,
+        issue_date,
+        entity_terms,
+        edition=edition,
+        section=section,
+        headline_priority_only=headline_priority_only,
+    )
+
+
+def fetch_entity_mention_count_in_range(
+    start_date: str | None,
+    end_date: str | None,
     entity_terms: list[str],
     *,
     edition: str | None = None,
@@ -1053,7 +1184,8 @@ def fetch_entity_mention_count(
               left join sections s on s.id = a.section_id
               left join article_bodies ab on ab.article_id = a.id
               cross join unnest(%s::text[]) term
-              where (%s::date is null or i.issue_date = %s::date)
+              where (%s::date is null or i.issue_date >= %s::date)
+                and (%s::date is null or i.issue_date <= %s::date)
                 and (%s::text is null or p.publication_name ilike '%%' || %s::text || '%%')
                 and (%s::text is null or s.normalized_section ilike '%%' || %s::text || '%%')
                 and lower(
@@ -1065,13 +1197,45 @@ def fetch_entity_mention_count(
             from scored_articles
             where mention_score >= case when %s then 6 else 4 end
             """,
-            (normalized_terms, issue_date, issue_date, edition, edition, section, section, headline_priority_only),
+            (
+                normalized_terms,
+                start_date,
+                start_date,
+                end_date,
+                end_date,
+                edition,
+                edition,
+                section,
+                section,
+                headline_priority_only,
+            ),
         )
         return int(cur.fetchone()["article_count"])
 
 
 def fetch_entity_mention_contexts(
     issue_date: str | None,
+    entity_terms: list[str],
+    *,
+    edition: str | None = None,
+    section: str | None = None,
+    limit: int = 5,
+    headline_priority_only: bool = False,
+) -> list[dict[str, Any]]:
+    return fetch_entity_mention_contexts_in_range(
+        issue_date,
+        issue_date,
+        entity_terms,
+        edition=edition,
+        section=section,
+        limit=limit,
+        headline_priority_only=headline_priority_only,
+    )
+
+
+def fetch_entity_mention_contexts_in_range(
+    start_date: str | None,
+    end_date: str | None,
     entity_terms: list[str],
     *,
     edition: str | None = None,
@@ -1106,7 +1270,8 @@ def fetch_entity_mention_contexts(
               left join sections s on s.id = a.section_id
               left join article_bodies ab on ab.article_id = a.id
               cross join unnest(%s::text[]) term
-              where (%s::date is null or i.issue_date = %s::date)
+              where (%s::date is null or i.issue_date >= %s::date)
+                and (%s::date is null or i.issue_date <= %s::date)
                 and (%s::text is null or p.publication_name ilike '%%' || %s::text || '%%')
                 and (%s::text is null or s.normalized_section ilike '%%' || %s::text || '%%')
                 and a.headline is not null
@@ -1126,12 +1291,95 @@ def fetch_entity_mention_contexts(
             order by max(mention_score) desc, article_count desc, headline
             limit %s
             """,
-            (normalized_terms, issue_date, issue_date, edition, edition, section, section, headline_priority_only, limit),
+            (
+                normalized_terms,
+                start_date,
+                start_date,
+                end_date,
+                end_date,
+                edition,
+                edition,
+                section,
+                section,
+                headline_priority_only,
+                limit,
+            ),
+        )
+        return cur.fetchall()
+
+
+def fetch_entity_mention_year_counts_in_range(
+    start_date: str | None,
+    end_date: str | None,
+    entity_terms: list[str],
+    *,
+    edition: str | None = None,
+    section: str | None = None,
+    headline_priority_only: bool = False,
+) -> list[dict[str, Any]]:
+    if not entity_terms:
+        return []
+    normalized_terms = [term.lower() for term in entity_terms if term]
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            with scored_articles as (
+              select
+                a.id,
+                extract(year from i.issue_date)::int as coverage_year,
+                max(
+                  case
+                    when lower(coalesce(a.headline, '')) like '%%' || term || '%%' then 6
+                    when lower(left(coalesce(ab.cleaned_text, ab.body_text, ''), 320)) like '%%' || term || '%%' then 4
+                    when lower(coalesce(ab.cleaned_text, ab.body_text, '')) like '%%' || term || '%%' then 1
+                    else 0
+                  end
+                ) as mention_score
+              from articles a
+              join publication_issues pi on pi.id = a.publication_issue_id
+              join publications p on p.id = pi.publication_id
+              join issues i on i.id = pi.issue_id
+              left join sections s on s.id = a.section_id
+              left join article_bodies ab on ab.article_id = a.id
+              cross join unnest(%s::text[]) term
+              where (%s::date is null or i.issue_date >= %s::date)
+                and (%s::date is null or i.issue_date <= %s::date)
+                and (%s::text is null or p.publication_name ilike '%%' || %s::text || '%%')
+                and (%s::text is null or s.normalized_section ilike '%%' || %s::text || '%%')
+                and lower(
+                  coalesce(a.headline, '') || ' ' || coalesce(ab.body_text, '') || ' ' || coalesce(ab.cleaned_text, '')
+                ) like '%%' || term || '%%'
+              group by a.id, extract(year from i.issue_date)
+            )
+            select
+              coverage_year as year,
+              count(*) as article_count
+            from scored_articles
+            where mention_score >= case when %s then 6 else 4 end
+            group by coverage_year
+            order by article_count desc, coverage_year desc
+            """,
+            (
+                normalized_terms,
+                start_date,
+                start_date,
+                end_date,
+                end_date,
+                edition,
+                edition,
+                section,
+                section,
+                headline_priority_only,
+            ),
         )
         return cur.fetchall()
 
 
 def fetch_matching_publications(issue_date: str | None, edition_term: str) -> list[dict[str, Any]]:
+    return fetch_matching_publications_in_range(issue_date, issue_date, edition_term)
+
+
+def fetch_matching_publications_in_range(start_date: str | None, end_date: str | None, edition_term: str) -> list[dict[str, Any]]:
     with get_cursor() as cur:
         cur.execute(
             """
@@ -1142,17 +1390,22 @@ def fetch_matching_publications(issue_date: str | None, edition_term: str) -> li
             join publication_issues pi on pi.id = a.publication_issue_id
             join publications p on p.id = pi.publication_id
             join issues i on i.id = pi.issue_id
-            where (%s::date is null or i.issue_date = %s::date)
+            where (%s::date is null or i.issue_date >= %s::date)
+              and (%s::date is null or i.issue_date <= %s::date)
               and p.publication_name ilike '%%' || %s::text || '%%'
             group by p.publication_name
             order by article_count desc, p.publication_name
             """,
-            (issue_date, issue_date, edition_term),
+            (start_date, start_date, end_date, end_date, edition_term),
         )
         return cur.fetchall()
 
 
 def fetch_section_counts(issue_date: str | None):
+    return fetch_section_counts_in_range(issue_date, issue_date)
+
+
+def fetch_section_counts_in_range(start_date: str | None, end_date: str | None):
     with get_cursor() as cur:
         cur.execute(
             """
@@ -1163,11 +1416,37 @@ def fetch_section_counts(issue_date: str | None):
             join publication_issues pi on pi.id = a.publication_issue_id
             join issues i on i.id = pi.issue_id
             left join sections s on s.id = a.section_id
-            where (%s::date is null or i.issue_date = %s::date)
+            where (%s::date is null or i.issue_date >= %s::date)
+              and (%s::date is null or i.issue_date <= %s::date)
             group by s.normalized_section
             order by article_count desc, section nulls last
             """,
-            (issue_date, issue_date),
+            (start_date, start_date, end_date, end_date),
+        )
+        return cur.fetchall()
+
+
+def fetch_publication_counts(issue_date: str | None):
+    return fetch_publication_counts_in_range(issue_date, issue_date)
+
+
+def fetch_publication_counts_in_range(start_date: str | None, end_date: str | None):
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            select
+              p.publication_name,
+              count(*) as article_count
+            from articles a
+            join publication_issues pi on pi.id = a.publication_issue_id
+            join publications p on p.id = pi.publication_id
+            join issues i on i.id = pi.issue_id
+            where (%s::date is null or i.issue_date >= %s::date)
+              and (%s::date is null or i.issue_date <= %s::date)
+            group by p.publication_name
+            order by article_count desc, p.publication_name
+            """,
+            (start_date, start_date, end_date, end_date),
         )
         return cur.fetchall()
 
@@ -1178,10 +1457,15 @@ def semantic_search(
     edition: str | None,
     section: str | None,
     limit: int,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ):
     candidate_limit = max(limit * 40, 400)
-    if not issue_date and not edition and not section:
+    if not issue_date and not start_date and not end_date and not edition and not section:
         candidate_limit = max(limit * 10, 200)
+    effective_start_date = start_date if start_date is not None else issue_date
+    effective_end_date = end_date if end_date is not None else issue_date
     with get_cursor() as cur:
         cur.execute(
             """
@@ -1209,7 +1493,8 @@ def semantic_search(
             join publications p on p.id = pi.publication_id
             join issues i on i.id = pi.issue_id
             left join sections s on s.id = a.section_id
-            where (%s::date is null or i.issue_date = %s::date)
+            where (%s::date is null or i.issue_date >= %s::date)
+              and (%s::date is null or i.issue_date <= %s::date)
               and (%s::text is null or p.publication_name ilike '%%' || %s::text || '%%')
               and (%s::text is null or s.normalized_section ilike '%%' || %s::text || '%%')
             order by c.distance
@@ -1219,8 +1504,10 @@ def semantic_search(
                 json.dumps(embedding),
                 json.dumps(embedding),
                 candidate_limit,
-                issue_date,
-                issue_date,
+                effective_start_date,
+                effective_start_date,
+                effective_end_date,
+                effective_end_date,
                 edition,
                 edition,
                 section,
@@ -1237,7 +1524,12 @@ def keyword_search(
     edition: str | None,
     section: str | None,
     limit: int,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ):
+    effective_start_date = start_date if start_date is not None else issue_date
+    effective_end_date = end_date if end_date is not None else issue_date
     with get_cursor() as cur:
         cur.execute(
             """
@@ -1264,7 +1556,8 @@ def keyword_search(
             join issues i on i.id = pi.issue_id
             left join sections s on s.id = a.section_id
             left join article_bodies ab on ab.article_id = a.id
-            where (%s::date is null or i.issue_date = %s::date)
+            where (%s::date is null or i.issue_date >= %s::date)
+              and (%s::date is null or i.issue_date <= %s::date)
               and (%s::text is null or p.publication_name ilike '%%' || %s::text || '%%')
               and (%s::text is null or s.normalized_section ilike '%%' || %s::text || '%%')
               and (
@@ -1274,7 +1567,18 @@ def keyword_search(
             order by lexical_score desc, a.id
             limit %s
             """,
-            (query_text, issue_date, issue_date, edition, edition, section, section, limit),
+            (
+                query_text,
+                effective_start_date,
+                effective_start_date,
+                effective_end_date,
+                effective_end_date,
+                edition,
+                edition,
+                section,
+                section,
+                limit,
+            ),
         )
         return cur.fetchall()
 
